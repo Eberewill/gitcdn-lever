@@ -260,6 +260,73 @@ function sanitizeAssetName(value: unknown): string | null {
   return trimmed;
 }
 
+function extractExtensionFromName(name: string | null): string | null {
+  if (!name) {
+    return null;
+  }
+
+  const lastDotIndex = name.lastIndexOf(".");
+  if (lastDotIndex <= 0 || lastDotIndex === name.length - 1) {
+    return null;
+  }
+
+  const extension = name.slice(lastDotIndex + 1).toLowerCase();
+  if (!/^[a-z0-9]{1,10}$/.test(extension)) {
+    return null;
+  }
+
+  return extension;
+}
+
+function extractMimeType(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const match = value.match(/^data:([^;,]+)[;,]/i);
+  if (!match) {
+    return null;
+  }
+
+  return match[1].toLowerCase();
+}
+
+function extensionFromMimeType(mimeType: string | null): string | null {
+  if (!mimeType) {
+    return null;
+  }
+
+  const mimeToExt: Record<string, string> = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/svg+xml": "svg",
+    "video/mp4": "mp4",
+    "video/webm": "webm",
+    "audio/mpeg": "mp3",
+    "audio/wav": "wav",
+    "audio/ogg": "ogg",
+    "application/pdf": "pdf",
+    "text/plain": "txt",
+    "application/json": "json",
+  };
+
+  return mimeToExt[mimeType] ?? null;
+}
+
+function generateAnonymousAssetName(
+  originalName: string | null,
+  encodedContent: unknown,
+): string {
+  const extension =
+    extractExtensionFromName(originalName) ??
+    extensionFromMimeType(extractMimeType(encodedContent));
+  const baseName = `${Date.now()}-${crypto.randomBytes(8).toString("hex")}`;
+
+  return extension ? `${baseName}.${extension}` : baseName;
+}
+
 function extractBase64Payload(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
@@ -614,15 +681,14 @@ export function createApiApp() {
       return res.status(400).json({ error: "Select a repository before uploading." });
     }
 
-    const assetName = sanitizeAssetName(req.body?.name);
-    if (!assetName) {
-      return res.status(400).json({ error: "Invalid asset name." });
-    }
+    const originalName = sanitizeAssetName(req.body?.name);
 
     const base64Content = extractBase64Payload(req.body?.content);
     if (!base64Content) {
       return res.status(400).json({ error: "Invalid upload payload." });
     }
+
+    const assetName = generateAnonymousAssetName(originalName, req.body?.content);
 
     const commitMessage =
       typeof req.body?.message === "string" && req.body.message.trim()
@@ -644,6 +710,7 @@ export function createApiApp() {
 
       res.json({
         success: true,
+        name: assetName,
         cdn_url: toCdnUrl(selection, assetPath),
       });
     } catch (error) {

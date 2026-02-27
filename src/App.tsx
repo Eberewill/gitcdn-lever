@@ -38,7 +38,7 @@ interface Asset {
   path: string;
   sha: string;
   size: number;
-  download_url: string;
+  download_url: string | null;
   cdn_url: string;
 }
 
@@ -204,6 +204,9 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
   const [assets, setAssets] = useState<Asset[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [uploadingFileName, setUploadingFileName] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [imagePreviewAttempts, setImagePreviewAttempts] = useState<Record<string, number>>({});
   const [copying, setCopying] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -225,27 +228,49 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    const fileInput = e.target;
     if (!file) return;
 
+    setUploadError(null);
     setUploading(true);
+    setUploadingFileName(file.name);
     const reader = new FileReader();
     reader.onloadend = async () => {
+      const content = typeof reader.result === 'string' ? reader.result : null;
+      if (!content) {
+        setUploadError('Failed to read file before upload.');
+        setUploading(false);
+        setUploadingFileName(null);
+        fileInput.value = '';
+        return;
+      }
+
       try {
         const res = await fetch('/api/upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name: file.name,
-            content: reader.result,
+            content,
           })
         });
+
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => null);
+          setUploadError(errorData?.error || 'Upload failed. Please try again.');
+          return;
+        }
+
         if (res.ok) {
-          fetchAssets();
+          await fetchAssets();
         }
       } catch (err) {
         console.error(err);
+        setUploadError('Upload failed. Please try again.');
       } finally {
         setUploading(false);
+        setUploadingFileName(null);
+        fileInput.value = '';
       }
     };
     reader.readAsDataURL(file);
@@ -265,6 +290,26 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
     navigator.clipboard.writeText(text);
     setCopying(id);
     setTimeout(() => setCopying(null), 2000);
+  };
+
+  const isImageAsset = (assetName: string) => /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(assetName);
+
+  const getPreviewUrl = (asset: Asset) => {
+    const attempt = imagePreviewAttempts[asset.sha] ?? 0;
+    if (attempt === 0 && asset.download_url) {
+      return asset.download_url;
+    }
+    if (attempt <= 1 && asset.cdn_url) {
+      return asset.cdn_url;
+    }
+    return null;
+  };
+
+  const handlePreviewError = (asset: Asset) => {
+    setImagePreviewAttempts((previous) => ({
+      ...previous,
+      [asset.sha]: Math.min((previous[asset.sha] ?? 0) + 1, 2),
+    }));
   };
 
   const formatSize = (bytes: number) => {
@@ -308,10 +353,27 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
             className="flex items-center gap-2 px-6 py-2.5 bg-zinc-900 text-white rounded-xl font-semibold hover:bg-zinc-800 transition-all disabled:opacity-50"
           >
             {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-            Upload Asset
+            {uploading ? 'Uploading...' : 'Upload Asset'}
           </button>
         </div>
       </div>
+
+      {uploading ? (
+        <div className="mb-6 rounded-2xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 flex items-start gap-3">
+          <Loader2 className="w-4 h-4 mt-0.5 text-emerald-600 dark:text-emerald-400 animate-spin" />
+          <div>
+            <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">Uploading asset...</p>
+            <p className="text-xs text-emerald-700/80 dark:text-emerald-300/80 truncate max-w-xl">{uploadingFileName}</p>
+            <p className="text-xs text-emerald-700/70 dark:text-emerald-300/70 mt-1">Your file will be stored with a randomized private filename.</p>
+          </div>
+        </div>
+      ) : null}
+
+      {uploadError ? (
+        <div className="mb-6 rounded-2xl border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/20 px-4 py-3 text-sm font-medium text-red-700 dark:text-red-300">
+          {uploadError}
+        </div>
+      ) : null}
 
       {loading ? (
         <div className="py-20 flex flex-col items-center justify-center gap-4">
@@ -329,10 +391,11 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
           </p>
           <button 
             onClick={() => fileInputRef.current?.click()}
-            className="flex items-center gap-2 px-6 py-2.5 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border border-zinc-200 dark:border-zinc-700 rounded-xl font-semibold hover:bg-zinc-50 dark:hover:bg-zinc-800/70 transition-all"
+            disabled={uploading}
+            className="flex items-center gap-2 px-6 py-2.5 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border border-zinc-200 dark:border-zinc-700 rounded-xl font-semibold hover:bg-zinc-50 dark:hover:bg-zinc-800/70 transition-all disabled:opacity-50"
           >
-            <Plus className="w-4 h-4" />
-            Upload First Asset
+            {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+            {uploading ? 'Uploading...' : 'Upload First Asset'}
           </button>
         </div>
       ) : (
@@ -348,12 +411,14 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
                 className="group bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-700 overflow-hidden hover:shadow-xl hover:shadow-zinc-200 dark:hover:shadow-zinc-950/50 transition-all"
               >
                 <div className="aspect-video bg-zinc-50 dark:bg-zinc-950 relative overflow-hidden flex items-center justify-center border-b border-zinc-100 dark:border-zinc-800">
-                  {asset.name.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i) ? (
-                    <img 
-                      src={asset.download_url} 
-                      alt={asset.name} 
+                  {isImageAsset(asset.name) && getPreviewUrl(asset) ? (
+                    <img
+                      src={getPreviewUrl(asset)!}
+                      alt={asset.name}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                       referrerPolicy="no-referrer"
+                      loading="lazy"
+                      onError={() => handlePreviewError(asset)}
                     />
                   ) : (
                     <FileText className="w-12 h-12 text-zinc-300 dark:text-zinc-600" />
