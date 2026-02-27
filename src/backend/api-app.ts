@@ -20,6 +20,7 @@ const HAS_CRYPTO_CONFIG = Boolean(SESSION_SECRET || TOKEN_ENCRYPTION_KEY);
 
 const SESSION_COOKIE_NAME = "gitcdn_session";
 const OAUTH_STATE_COOKIE_NAME = "gitcdn_oauth_state";
+const ASSETS_ROOT_PATH = "assets";
 
 if (!HAS_CRYPTO_CONFIG) {
   const level = IS_PRODUCTION ? "ERROR" : "WARN";
@@ -54,6 +55,28 @@ type RepoSelection = {
   owner: string;
   repo: string;
   branch: string;
+};
+
+type AssetBlobEntry = {
+  repoPath: string;
+  relativePath: string;
+  sha: string;
+  size: number;
+};
+
+type AssetFile = {
+  name: string;
+  path: string;
+  folder: string;
+  sha: string;
+  size: number;
+  download_url: string;
+};
+
+type AssetFolder = {
+  name: string;
+  path: string;
+  parent: string | null;
 };
 
 function firstHeaderValue(value: string | string[] | undefined): string | undefined {
@@ -260,6 +283,150 @@ function sanitizeAssetName(value: unknown): string | null {
   return trimmed;
 }
 
+function sanitizePathSegment(value: string): string | null {
+  if (!value || value === "." || value === "..") {
+    return null;
+  }
+
+  if (!/^[A-Za-z0-9._ -]{1,128}$/.test(value)) {
+    return null;
+  }
+
+  return value;
+}
+
+function normalizeFolderPath(value: unknown): string | null {
+  if (value == null) {
+    return "";
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  let normalized = trimmed.replaceAll("\\", "/");
+  if (normalized === ASSETS_ROOT_PATH) {
+    return "";
+  }
+
+  if (normalized.startsWith(`${ASSETS_ROOT_PATH}/`)) {
+    normalized = normalized.slice(ASSETS_ROOT_PATH.length + 1);
+  }
+
+  normalized = normalized.replace(/^\/+/, "").replace(/\/+$/, "");
+  if (!normalized) {
+    return "";
+  }
+
+  const segments = normalized
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (segments.length === 0) {
+    return "";
+  }
+
+  const validatedSegments: string[] = [];
+  for (const segment of segments) {
+    const safeSegment = sanitizePathSegment(segment);
+    if (!safeSegment) {
+      return null;
+    }
+
+    validatedSegments.push(safeSegment);
+  }
+
+  return validatedSegments.join("/");
+}
+
+function normalizeAssetRelativePath(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  let normalized = value.trim().replaceAll("\\", "/");
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized === ASSETS_ROOT_PATH) {
+    return null;
+  }
+
+  if (normalized.startsWith(`${ASSETS_ROOT_PATH}/`)) {
+    normalized = normalized.slice(ASSETS_ROOT_PATH.length + 1);
+  }
+
+  normalized = normalized.replace(/^\/+/, "").replace(/\/+$/, "");
+  if (!normalized) {
+    return null;
+  }
+
+  const segments = normalized
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (segments.length === 0) {
+    return null;
+  }
+
+  const validatedSegments: string[] = [];
+  for (const segment of segments) {
+    const safeSegment = sanitizePathSegment(segment);
+    if (!safeSegment) {
+      return null;
+    }
+
+    validatedSegments.push(safeSegment);
+  }
+
+  return validatedSegments.join("/");
+}
+
+function parentFolderPath(path: string): string {
+  const lastSlashIndex = path.lastIndexOf("/");
+  if (lastSlashIndex < 0) {
+    return "";
+  }
+
+  return path.slice(0, lastSlashIndex);
+}
+
+function fileNameFromPath(path: string): string {
+  const lastSlashIndex = path.lastIndexOf("/");
+  if (lastSlashIndex < 0) {
+    return path;
+  }
+
+  return path.slice(lastSlashIndex + 1);
+}
+
+function joinAssetRepoPath(relativePath: string): string {
+  return relativePath ? `${ASSETS_ROOT_PATH}/${relativePath}` : ASSETS_ROOT_PATH;
+}
+
+function toRawGitHubUrl(selection: RepoSelection, filePath: string): string {
+  const encodedPath = filePath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+  return `https://raw.githubusercontent.com/${selection.owner}/${selection.repo}/${selection.branch}/${encodedPath}`;
+}
+
+function addFolderWithAncestors(target: Set<string>, folderPath: string) {
+  if (!folderPath) {
+    return;
+  }
+
+  let current = folderPath;
+  while (current) {
+    target.add(current);
+    current = parentFolderPath(current);
+  }
+}
+
 function extractExtensionFromName(name: string | null): string | null {
   if (!name) {
     return null;
@@ -356,6 +523,91 @@ function getRepoSelection(session: UserSession): RepoSelection | null {
 
 function toCdnUrl(selection: RepoSelection, filePath: string): string {
   return `https://cdn.jsdelivr.net/gh/${selection.owner}/${selection.repo}@${selection.branch}/${filePath}`;
+}
+
+async function getAssetBlobEntries(
+  octokit: Octokit,
+  selection: RepoSelection,
+): Promise<AssetBlobEntry[]> {
+  const { data: branchData } = await octokit.repos.getBranch({
+    owner: selection.owner,
+    repo: selection.repo,
+    branch: selection.branch,
+  });
+
+  const treeSha = branchData.commit.commit.tree.sha;
+  const { data: treeData } = await octokit.git.getTree({
+    owner: selection.owner,
+    repo: selection.repo,
+    tree_sha: treeSha,
+    recursive: "1",
+  });
+
+  const entries: AssetBlobEntry[] = [];
+
+  for (const treeNode of treeData.tree) {
+    if (treeNode.type !== "blob") {
+      continue;
+    }
+
+    if (!treeNode.path || !treeNode.sha) {
+      continue;
+    }
+
+    if (!treeNode.path.startsWith(`${ASSETS_ROOT_PATH}/`)) {
+      continue;
+    }
+
+    const relativePath = normalizeAssetRelativePath(treeNode.path);
+    if (!relativePath) {
+      continue;
+    }
+
+    entries.push({
+      repoPath: joinAssetRepoPath(relativePath),
+      relativePath,
+      sha: treeNode.sha,
+      size: treeNode.size ?? 0,
+    });
+  }
+
+  return entries;
+}
+
+function buildAssetInventory(selection: RepoSelection, blobEntries: AssetBlobEntry[]) {
+  const files: AssetFile[] = [];
+  const folderSet = new Set<string>();
+
+  for (const entry of blobEntries) {
+    const fileName = fileNameFromPath(entry.relativePath);
+    const folderPath = parentFolderPath(entry.relativePath);
+    addFolderWithAncestors(folderSet, folderPath);
+
+    if (fileName === ".gitkeep") {
+      continue;
+    }
+
+    files.push({
+      name: fileName,
+      path: entry.relativePath,
+      folder: folderPath,
+      sha: entry.sha,
+      size: entry.size,
+      download_url: toRawGitHubUrl(selection, entry.repoPath),
+    });
+  }
+
+  files.sort((a, b) => a.path.localeCompare(b.path));
+
+  const folders: AssetFolder[] = Array.from(folderSet)
+    .sort((a, b) => a.localeCompare(b))
+    .map((folderPath) => ({
+      path: folderPath,
+      name: fileNameFromPath(folderPath),
+      parent: parentFolderPath(folderPath) || null,
+    }));
+
+  return { files, folders };
 }
 
 function readSession(req: Request): UserSession | null {
@@ -628,41 +880,178 @@ export function createApiApp() {
 
     const selection = getRepoSelection(session);
     if (!selection) {
-      return res.json([]);
+      return res.json({
+        current_folder: "",
+        folders: [],
+        files: [],
+        all_folders: [],
+      });
+    }
+
+    const requestedFolder = normalizeFolderPath(req.query.folder);
+    if (requestedFolder == null) {
+      return res.status(400).json({ error: "Invalid folder path." });
     }
 
     const octokit = new Octokit({ auth: session.github_token });
 
     try {
-      const { data: content } = await octokit.repos.getContent({
-        owner: selection.owner,
-        repo: selection.repo,
-        path: "assets",
-        ref: selection.branch,
+      const blobEntries = await getAssetBlobEntries(octokit, selection);
+      const inventory = buildAssetInventory(selection, blobEntries);
+
+      const childFolders = inventory.folders
+        .filter((folder) => (folder.parent ?? "") === requestedFolder)
+        .map((folder) => ({ name: folder.name, path: folder.path }));
+
+      const folderFiles = inventory.files
+        .filter((file) => file.folder === requestedFolder)
+        .map((file) => ({
+          ...file,
+          cdn_url: toCdnUrl(selection, joinAssetRepoPath(file.path)),
+        }));
+
+      res.json({
+        current_folder: requestedFolder,
+        folders: childFolders,
+        files: folderFiles,
+        all_folders: inventory.folders.map((folder) => folder.path),
       });
-
-      if (!Array.isArray(content)) {
-        return res.json([]);
-      }
-
-      res.json(
-        content
-          .filter((file) => file.type === "file")
-          .map((file) => ({
-            name: file.name,
-            path: file.path,
-            sha: file.sha,
-            size: file.size,
-            download_url: file.download_url,
-            cdn_url: toCdnUrl(selection, file.path),
-          })),
-      );
     } catch (error: any) {
       if (error.status === 404) {
-        return res.json([]);
+        return res.json({
+          current_folder: requestedFolder,
+          folders: [],
+          files: [],
+          all_folders: [],
+        });
       }
 
+      console.error("List assets error:", error);
       res.status(500).json({ error: "Failed to fetch assets" });
+    }
+  });
+
+  app.get("/api/folders", async (req, res) => {
+    if (!ensureCryptoConfigured(res)) {
+      return;
+    }
+
+    const session = requireSession(req, res);
+    if (!session) {
+      return;
+    }
+
+    const selection = getRepoSelection(session);
+    if (!selection) {
+      return res.json({ folders: [] });
+    }
+
+    const octokit = new Octokit({ auth: session.github_token });
+
+    try {
+      const blobEntries = await getAssetBlobEntries(octokit, selection);
+      const inventory = buildAssetInventory(selection, blobEntries);
+
+      res.json({
+        folders: inventory.folders,
+      });
+    } catch (error: any) {
+      if (error.status === 404) {
+        return res.json({ folders: [] });
+      }
+
+      console.error("List folders error:", error);
+      res.status(500).json({ error: "Failed to fetch folders" });
+    }
+  });
+
+  app.post("/api/folders", async (req, res) => {
+    if (!ensureCryptoConfigured(res)) {
+      return;
+    }
+
+    const session = requireSession(req, res);
+    if (!session) {
+      return;
+    }
+
+    const selection = getRepoSelection(session);
+    if (!selection) {
+      return res.status(400).json({ error: "Select a repository before creating folders." });
+    }
+
+    const folderPath = normalizeFolderPath(req.body?.path);
+    if (folderPath == null || !folderPath) {
+      return res.status(400).json({ error: "Folder path is required." });
+    }
+
+    const octokit = new Octokit({ auth: session.github_token });
+    const folderRepoPath = joinAssetRepoPath(folderPath);
+    const gitkeepPath = `${folderRepoPath}/.gitkeep`;
+
+    try {
+      await octokit.repos.createOrUpdateFileContents({
+        owner: selection.owner,
+        repo: selection.repo,
+        path: gitkeepPath,
+        branch: selection.branch,
+        message: `Create folder ${folderPath} via GitCDN`,
+        content: Buffer.from("gitcdn-folder\n").toString("base64"),
+      });
+
+      res.json({ success: true, path: folderPath });
+    } catch (error) {
+      console.error("Create folder error:", error);
+      res.status(500).json({ error: "Failed to create folder." });
+    }
+  });
+
+  app.delete("/api/folders", async (req, res) => {
+    if (!ensureCryptoConfigured(res)) {
+      return;
+    }
+
+    const session = requireSession(req, res);
+    if (!session) {
+      return;
+    }
+
+    const selection = getRepoSelection(session);
+    if (!selection) {
+      return res.status(400).json({ error: "Select a repository before deleting folders." });
+    }
+
+    const folderPath = normalizeFolderPath(req.query.path);
+    if (folderPath == null || !folderPath) {
+      return res.status(400).json({ error: "Folder path query param is required." });
+    }
+
+    const octokit = new Octokit({ auth: session.github_token });
+
+    try {
+      const blobEntries = await getAssetBlobEntries(octokit, selection);
+      const prefix = `${folderPath}/`;
+      const entriesToDelete = blobEntries.filter((entry) => entry.relativePath.startsWith(prefix));
+
+      if (entriesToDelete.length === 0) {
+        return res.status(404).json({ error: "Folder not found or empty." });
+      }
+
+      for (const entry of entriesToDelete) {
+        await octokit.repos.deleteFile({
+          owner: selection.owner,
+          repo: selection.repo,
+          path: entry.repoPath,
+          branch: selection.branch,
+          message: `Delete ${folderPath} via GitCDN`,
+          sha: entry.sha,
+        });
+      }
+
+      res.json({ success: true, deleted: entriesToDelete.length });
+    } catch (error) {
+      console.error("Delete folder error:", error);
+      res.status(500).json({ error: "Failed to delete folder." });
     }
   });
 
@@ -681,6 +1070,11 @@ export function createApiApp() {
       return res.status(400).json({ error: "Select a repository before uploading." });
     }
 
+    const folderPath = normalizeFolderPath(req.body?.folder);
+    if (folderPath == null) {
+      return res.status(400).json({ error: "Invalid folder path." });
+    }
+
     const originalName = sanitizeAssetName(req.body?.name);
 
     const base64Content = extractBase64Payload(req.body?.content);
@@ -696,7 +1090,8 @@ export function createApiApp() {
         : `Upload ${assetName} via GitCDN`;
 
     const octokit = new Octokit({ auth: session.github_token });
-    const assetPath = `assets/${assetName}`;
+    const relativeAssetPath = folderPath ? `${folderPath}/${assetName}` : assetName;
+    const assetPath = joinAssetRepoPath(relativeAssetPath);
 
     try {
       await octokit.repos.createOrUpdateFileContents({
@@ -711,11 +1106,155 @@ export function createApiApp() {
       res.json({
         success: true,
         name: assetName,
+        path: relativeAssetPath,
+        folder: folderPath,
         cdn_url: toCdnUrl(selection, assetPath),
       });
     } catch (error) {
       console.error("Upload error:", error);
       res.status(500).json({ error: "Upload failed" });
+    }
+  });
+
+  app.post("/api/assets/move", async (req, res) => {
+    if (!ensureCryptoConfigured(res)) {
+      return;
+    }
+
+    const session = requireSession(req, res);
+    if (!session) {
+      return;
+    }
+
+    const selection = getRepoSelection(session);
+    if (!selection) {
+      return res.status(400).json({ error: "Select a repository before moving assets." });
+    }
+
+    const sourcePath = normalizeAssetRelativePath(req.body?.path);
+    if (!sourcePath) {
+      return res.status(400).json({ error: "Invalid source asset path." });
+    }
+
+    const destinationFolder = normalizeFolderPath(req.body?.destination_folder);
+    if (destinationFolder == null) {
+      return res.status(400).json({ error: "Invalid destination folder path." });
+    }
+
+    const fileName = fileNameFromPath(sourcePath);
+    const targetPath = destinationFolder ? `${destinationFolder}/${fileName}` : fileName;
+    if (targetPath === sourcePath) {
+      return res.status(400).json({ error: "Source and destination are the same." });
+    }
+
+    const octokit = new Octokit({ auth: session.github_token });
+    const sourceRepoPath = joinAssetRepoPath(sourcePath);
+    const targetRepoPath = joinAssetRepoPath(targetPath);
+
+    try {
+      try {
+        await octokit.repos.getContent({
+          owner: selection.owner,
+          repo: selection.repo,
+          path: targetRepoPath,
+          ref: selection.branch,
+        });
+
+        return res.status(409).json({ error: "A file already exists in the destination folder." });
+      } catch (error: any) {
+        if (error.status !== 404) {
+          throw error;
+        }
+      }
+
+      const sourceResponse = await octokit.repos.getContent({
+        owner: selection.owner,
+        repo: selection.repo,
+        path: sourceRepoPath,
+        ref: selection.branch,
+      });
+
+      if (Array.isArray(sourceResponse.data) || sourceResponse.data.type !== "file") {
+        return res.status(400).json({ error: "Source path must be a file." });
+      }
+
+      const sourceFile = sourceResponse.data;
+      const content = sourceFile.content?.replace(/\n/g, "");
+      if (!content || sourceFile.encoding !== "base64") {
+        return res.status(500).json({ error: "Could not read source file content." });
+      }
+
+      await octokit.repos.createOrUpdateFileContents({
+        owner: selection.owner,
+        repo: selection.repo,
+        path: targetRepoPath,
+        branch: selection.branch,
+        message: `Move ${sourcePath} to ${targetPath} via GitCDN`,
+        content,
+      });
+
+      await octokit.repos.deleteFile({
+        owner: selection.owner,
+        repo: selection.repo,
+        path: sourceRepoPath,
+        branch: selection.branch,
+        message: `Delete ${sourcePath} after move via GitCDN`,
+        sha: sourceFile.sha,
+      });
+
+      res.json({
+        success: true,
+        path: targetPath,
+        folder: destinationFolder,
+        cdn_url: toCdnUrl(selection, targetRepoPath),
+      });
+    } catch (error) {
+      console.error("Move asset error:", error);
+      res.status(500).json({ error: "Failed to move asset." });
+    }
+  });
+
+  app.delete("/api/assets", async (req, res) => {
+    if (!ensureCryptoConfigured(res)) {
+      return;
+    }
+
+    const session = requireSession(req, res);
+    if (!session) {
+      return;
+    }
+
+    const selection = getRepoSelection(session);
+    if (!selection) {
+      return res.status(400).json({ error: "Select a repository before deleting assets." });
+    }
+
+    const assetPath = normalizeAssetRelativePath(req.query.path);
+    if (!assetPath) {
+      return res.status(400).json({ error: "path query param is required." });
+    }
+
+    const sha = typeof req.query.sha === "string" ? req.query.sha.trim() : "";
+    if (!sha) {
+      return res.status(400).json({ error: "sha query param is required." });
+    }
+
+    const octokit = new Octokit({ auth: session.github_token });
+
+    try {
+      await octokit.repos.deleteFile({
+        owner: selection.owner,
+        repo: selection.repo,
+        path: joinAssetRepoPath(assetPath),
+        branch: selection.branch,
+        message: `Delete ${assetPath} via GitCDN`,
+        sha,
+      });
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Delete asset error:", error);
+      res.status(500).json({ error: "Delete failed" });
     }
   });
 
@@ -750,14 +1289,15 @@ export function createApiApp() {
       await octokit.repos.deleteFile({
         owner: selection.owner,
         repo: selection.repo,
-        path: `assets/${assetName}`,
+        path: joinAssetRepoPath(assetName),
         branch: selection.branch,
         message: `Delete ${assetName} via GitCDN`,
         sha,
       });
 
       res.json({ success: true });
-    } catch {
+    } catch (error) {
+      console.error("Delete asset error:", error);
       res.status(500).json({ error: "Delete failed" });
     }
   });
