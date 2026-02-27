@@ -8,7 +8,6 @@ import {
   ExternalLink, 
   ChevronRight, 
   LogOut, 
-  Settings, 
   Check,
   Loader2,
   Plus,
@@ -153,58 +152,94 @@ const Navbar = ({ user, onLogout }: { user: User | null, onLogout: () => void })
 );
 
 const LandingPage = ({ onConnect }: { onConnect: () => void }) => (
-  <div className="min-h-[calc(100vh-64px)] flex flex-col items-center justify-center px-4 py-20 bg-zinc-50 dark:bg-zinc-950">
-    <motion.div 
+  <div className="h-full px-4 py-12 sm:py-16 bg-zinc-50 dark:bg-zinc-950 relative overflow-hidden">
+    <div className="absolute -top-24 -right-16 w-72 h-72 bg-emerald-400/20 dark:bg-emerald-500/15 blur-3xl rounded-full pointer-events-none" />
+    <div className="absolute top-1/2 -left-24 w-64 h-64 bg-zinc-300/20 dark:bg-zinc-700/25 blur-3xl rounded-full pointer-events-none" />
+    <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="text-center max-w-3xl"
+      className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-[1.15fr,0.85fr] gap-8 lg:gap-12 items-center relative"
     >
-      <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 text-sm font-medium border border-emerald-100 dark:border-emerald-800 mb-6">
-        <span className="relative flex h-2 w-2">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-        </span>
-        Open Source Asset Hosting
-      </div>
-      <h1 className="text-5xl md:text-7xl font-extrabold text-zinc-900 dark:text-zinc-100 tracking-tight mb-6">
-        Use GitHub as Your <span className="text-emerald-600 dark:text-emerald-400">Asset CDN</span>
-      </h1>
-      <p className="text-xl text-zinc-600 dark:text-zinc-300 mb-10 leading-relaxed">
-        Turn any GitHub repository into a lightweight public asset CDN. 
-        Upload images directly to your repo and get instant, reliable public URLs.
-      </p>
-      
-      <div className="flex flex-col sm:flex-row gap-4 justify-center">
-        <button 
-          onClick={onConnect}
-          className="flex items-center justify-center gap-2 px-8 py-4 bg-zinc-900 text-white rounded-xl font-semibold hover:bg-zinc-800 transition-all shadow-lg shadow-zinc-200 dark:shadow-zinc-950/30"
-        >
-          <Github className="w-5 h-5" />
-          Connect with GitHub
-        </button>
-        <a 
-          href="https://github.com" 
-          target="_blank" 
-          className="flex items-center justify-center gap-2 px-8 py-4 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border border-zinc-200 dark:border-zinc-700 rounded-xl font-semibold hover:bg-zinc-50 dark:hover:bg-zinc-800/70 transition-all"
-        >
-          View Documentation
-        </a>
+      <div>
+        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/90 dark:bg-zinc-900/90 text-zinc-700 dark:text-zinc-300 text-xs sm:text-sm font-semibold border border-zinc-200 dark:border-zinc-700 mb-6">
+          <span className="w-2 h-2 rounded-full bg-emerald-500" />
+          Git-native asset workflow
+        </div>
+        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-black tracking-tight text-zinc-900 dark:text-zinc-100 leading-tight">
+          Publish assets from the same repo you already ship.
+        </h1>
+        <p className="mt-5 text-lg text-zinc-600 dark:text-zinc-300 max-w-2xl leading-relaxed">
+          GitCDN gives your team a clean path from upload to public URL without adding another storage vendor.
+          Keep files in GitHub, deliver via jsDelivr.
+        </p>
+
+        <div className="mt-8 flex flex-col sm:flex-row gap-3">
+          <button
+            onClick={onConnect}
+            className="flex items-center justify-center gap-2 px-6 py-3.5 bg-zinc-900 text-white rounded-xl font-semibold hover:bg-zinc-800 transition-all shadow-lg shadow-zinc-200 dark:shadow-zinc-950/30"
+          >
+            <Github className="w-5 h-5" />
+            Connect with GitHub
+          </button>
+          <a
+            href="https://github.com"
+            target="_blank"
+            className="flex items-center justify-center gap-2 px-6 py-3.5 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border border-zinc-200 dark:border-zinc-700 rounded-xl font-semibold hover:bg-zinc-50 dark:hover:bg-zinc-800/70 transition-all"
+          >
+            <LinkIcon className="w-4 h-4" />
+            Docs & Source
+          </a>
+        </div>
+
+        <div className="mt-8 flex flex-wrap gap-2">
+          {['OAuth login', 'Folder-based library', 'Instant CDN URLs'].map((badge) => (
+            <span key={badge} className="px-3 py-1.5 rounded-full text-xs font-semibold bg-zinc-100 dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700">
+              {badge}
+            </span>
+          ))}
+        </div>
       </div>
 
-      <div className="mt-20 grid grid-cols-1 md:grid-cols-3 gap-8 text-left">
-        {[
-          { title: "Zero Config", desc: "No S3 buckets or complex IAM roles. Just your GitHub repo.", icon: <Settings className="w-6 h-6" /> },
-          { title: "Instant CDN", desc: "Leverage jsDelivr for lightning-fast global asset delivery.", icon: <LinkIcon className="w-6 h-6" /> },
-          { title: "Full Control", desc: "You own the data. Files live in your repo, not our servers.", icon: <Check className="w-6 h-6" /> },
-        ].map((feature, i) => (
-          <div key={i} className="p-6 bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-100 dark:border-zinc-800 shadow-sm">
-            <div className="w-12 h-12 bg-zinc-50 dark:bg-zinc-950 rounded-xl flex items-center justify-center text-zinc-900 dark:text-zinc-100 mb-4">
-              {feature.icon}
+      <div className="bg-white dark:bg-zinc-900 rounded-3xl border border-zinc-200 dark:border-zinc-700 shadow-xl shadow-zinc-200/60 dark:shadow-zinc-950/40 overflow-hidden">
+        <div className="px-5 py-4 border-b border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950/60">
+          <p className="text-sm font-bold text-zinc-900 dark:text-zinc-100">How teams use GitCDN</p>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Fast path from repository to production asset URL.</p>
+        </div>
+        <div className="p-5 space-y-4">
+          {[
+            { step: '01', title: 'Connect GitHub', desc: 'Authorize once and pick a repository branch.' },
+            { step: '02', title: 'Organize by folders', desc: 'Group files by product area or release.' },
+            { step: '03', title: 'Ship public links', desc: 'Copy CDN URLs directly into your app.' },
+          ].map((item) => (
+            <div key={item.step} className="flex gap-3 items-start">
+              <div className="w-8 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs font-bold flex items-center justify-center flex-shrink-0">
+                {item.step}
+              </div>
+              <div>
+                <p className="text-sm font-bold text-zinc-900 dark:text-zinc-100">{item.title}</p>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{item.desc}</p>
+              </div>
             </div>
-            <h3 className="font-bold text-zinc-900 dark:text-zinc-100 mb-2">{feature.title}</h3>
-            <p className="text-zinc-500 dark:text-zinc-400 text-sm leading-relaxed">{feature.desc}</p>
+          ))}
+
+          <div className="mt-4 p-3 rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700">
+            <p className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider mb-1">Example URL</p>
+            <code className="text-[11px] text-zinc-700 dark:text-zinc-300 break-all">
+              https://cdn.jsdelivr.net/gh/your-org/assets-repo@main/assets/hero/logo.png
+            </code>
           </div>
-        ))}
+
+          <div className="grid grid-cols-2 gap-2 pt-1">
+            <div className="rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 p-3">
+              <p className="text-[11px] font-semibold text-zinc-900 dark:text-zinc-100">No vendor lock-in</p>
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1">Files stay in GitHub.</p>
+            </div>
+            <div className="rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 p-3">
+              <p className="text-[11px] font-semibold text-zinc-900 dark:text-zinc-100">Built for OSS</p>
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1">Simple and transparent.</p>
+            </div>
+          </div>
+        </div>
       </div>
     </motion.div>
   </div>
@@ -1062,10 +1097,10 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 font-sans selection:bg-emerald-100 dark:selection:bg-emerald-900/40 selection:text-emerald-900 dark:selection:text-emerald-200">
+    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 font-sans selection:bg-emerald-100 dark:selection:bg-emerald-900/40 selection:text-emerald-900 dark:selection:text-emerald-200 flex flex-col">
       <Navbar user={user} onLogout={handleLogout} />
       
-      <main>
+      <main className="flex-1">
         {view === 'landing' && <LandingPage onConnect={handleConnect} />}
         {view === 'repos' && <RepoSelector repos={repos} onSelect={handleSelectRepo} loading={reposLoading} />}
         {view === 'dashboard' && user && (
@@ -1079,7 +1114,7 @@ export default function App() {
         )}
       </main>
 
-      <footer className="border-t border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 py-12">
+      <footer className="border-t border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 py-12 mt-auto">
         <div className="max-w-7xl mx-auto px-4 text-center">
           <div className="flex items-center justify-center gap-2 mb-4">
             <Github className="w-5 h-5 text-zinc-400 dark:text-zinc-500" />
