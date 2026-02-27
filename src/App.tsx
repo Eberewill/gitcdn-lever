@@ -38,7 +38,7 @@ interface Asset {
   path: string;
   sha: string;
   size: number;
-  download_url: string;
+  download_url: string | null;
   cdn_url: string;
 }
 
@@ -206,6 +206,7 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
   const [uploading, setUploading] = useState(false);
   const [uploadingFileName, setUploadingFileName] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [imagePreviewAttempts, setImagePreviewAttempts] = useState<Record<string, number>>({});
   const [copying, setCopying] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -289,6 +290,26 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
     navigator.clipboard.writeText(text);
     setCopying(id);
     setTimeout(() => setCopying(null), 2000);
+  };
+
+  const isImageAsset = (assetName: string) => /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(assetName);
+
+  const getPreviewUrl = (asset: Asset) => {
+    const attempt = imagePreviewAttempts[asset.sha] ?? 0;
+    if (attempt === 0 && asset.download_url) {
+      return asset.download_url;
+    }
+    if (attempt <= 1 && asset.cdn_url) {
+      return asset.cdn_url;
+    }
+    return null;
+  };
+
+  const handlePreviewError = (asset: Asset) => {
+    setImagePreviewAttempts((previous) => ({
+      ...previous,
+      [asset.sha]: Math.min((previous[asset.sha] ?? 0) + 1, 2),
+    }));
   };
 
   const formatSize = (bytes: number) => {
@@ -390,12 +411,14 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
                 className="group bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-700 overflow-hidden hover:shadow-xl hover:shadow-zinc-200 dark:hover:shadow-zinc-950/50 transition-all"
               >
                 <div className="aspect-video bg-zinc-50 dark:bg-zinc-950 relative overflow-hidden flex items-center justify-center border-b border-zinc-100 dark:border-zinc-800">
-                  {asset.name.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i) ? (
-                    <img 
-                      src={asset.download_url} 
-                      alt={asset.name} 
+                  {isImageAsset(asset.name) && getPreviewUrl(asset) ? (
+                    <img
+                      src={getPreviewUrl(asset)!}
+                      alt={asset.name}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                       referrerPolicy="no-referrer"
+                      loading="lazy"
+                      onError={() => handlePreviewError(asset)}
                     />
                   ) : (
                     <FileText className="w-12 h-12 text-zinc-300 dark:text-zinc-600" />
