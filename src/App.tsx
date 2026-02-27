@@ -58,6 +58,68 @@ interface AssetsResponse {
   all_folders: string[];
 }
 
+interface FolderTreeNode {
+  path: string;
+  name: string;
+  children: FolderTreeNode[];
+}
+
+function getParentFolderPath(path: string): string {
+  const lastSlash = path.lastIndexOf('/');
+  if (lastSlash < 0) {
+    return '';
+  }
+
+  return path.slice(0, lastSlash);
+}
+
+function getFolderDisplayName(path: string): string {
+  const parentPath = getParentFolderPath(path);
+  if (!parentPath) {
+    return path;
+  }
+
+  return path.slice(parentPath.length + 1);
+}
+
+function buildFolderTree(paths: string[]): FolderTreeNode[] {
+  const sortedPaths = [...new Set(paths)].sort((a, b) => a.localeCompare(b));
+  const nodeMap = new Map<string, FolderTreeNode>();
+
+  for (const path of sortedPaths) {
+    nodeMap.set(path, {
+      path,
+      name: getFolderDisplayName(path),
+      children: [],
+    });
+  }
+
+  const roots: FolderTreeNode[] = [];
+  for (const path of sortedPaths) {
+    const node = nodeMap.get(path);
+    if (!node) {
+      continue;
+    }
+
+    const parentPath = getParentFolderPath(path);
+    if (parentPath && nodeMap.has(parentPath)) {
+      nodeMap.get(parentPath)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  const sortTree = (nodes: FolderTreeNode[]) => {
+    nodes.sort((a, b) => a.name.localeCompare(b.name));
+    for (const node of nodes) {
+      sortTree(node.children);
+    }
+  };
+
+  sortTree(roots);
+  return roots;
+}
+
 // --- Components ---
 
 const Navbar = ({ user, onLogout }: { user: User | null, onLogout: () => void }) => (
@@ -230,6 +292,9 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
   const [folderActionLoading, setFolderActionLoading] = useState(false);
   const [movingAssetPath, setMovingAssetPath] = useState<string | null>(null);
   const [moveTargets, setMoveTargets] = useState<Record<string, string>>({});
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
+  const [draggedAsset, setDraggedAsset] = useState<{ path: string; folder: string } | null>(null);
+  const [dropFolderPath, setDropFolderPath] = useState<string | null>(null);
   const [imagePreviewAttempts, setImagePreviewAttempts] = useState<Record<string, number>>({});
   const [copying, setCopying] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -274,6 +339,18 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
   const openFolder = async (path: string) => {
     setLoading(true);
     setFolderActionError(null);
+    if (path) {
+      setExpandedFolders((previous) => {
+        const next = { ...previous };
+        let cursor = path;
+        while (cursor) {
+          next[cursor] = true;
+          cursor = getParentFolderPath(cursor);
+        }
+        return next;
+      });
+    }
+
     await fetchAssets(path);
   };
 
@@ -371,14 +448,6 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
     }
   };
 
-  const getParentFolder = (path: string): string => {
-    const lastSlash = path.lastIndexOf('/');
-    if (lastSlash < 0) {
-      return '';
-    }
-    return path.slice(0, lastSlash);
-  };
-
   const handleDeleteFolder = async (folderPath: string) => {
     if (!confirm(`Delete folder "${folderPath}" and all nested files?`)) {
       return;
@@ -396,7 +465,7 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
       }
 
       const nextFolder = currentFolder.startsWith(`${folderPath}/`) || currentFolder === folderPath
-        ? getParentFolder(folderPath)
+        ? getParentFolderPath(folderPath)
         : currentFolder;
       await fetchAssets(nextFolder);
     } catch (err) {
@@ -407,20 +476,19 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
     }
   };
 
-  const handleMoveAsset = async (asset: Asset) => {
-    const destinationFolder = moveTargets[asset.path] ?? currentFolder;
-    if (destinationFolder === asset.folder) {
-      return;
+  const moveAssetToFolder = async (assetPath: string, sourceFolder: string, destinationFolder: string) => {
+    if (destinationFolder === sourceFolder) {
+      return false;
     }
 
-    setMovingAssetPath(asset.path);
+    setMovingAssetPath(assetPath);
     setFolderActionError(null);
     try {
       const res = await fetch('/api/assets/move', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          path: asset.path,
+          path: assetPath,
           destination_folder: destinationFolder,
         }),
       });
@@ -428,16 +496,57 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
       if (!res.ok) {
         const errorData = await res.json().catch(() => null);
         setFolderActionError(errorData?.error || 'Failed to move asset.');
-        return;
+        return false;
       }
 
       await fetchAssets(currentFolder);
+      return true;
     } catch (err) {
       console.error(err);
       setFolderActionError('Failed to move asset.');
+      return false;
     } finally {
       setMovingAssetPath(null);
     }
+  };
+
+  const handleMoveAsset = async (asset: Asset) => {
+    const destinationFolder = moveTargets[asset.path] ?? currentFolder;
+    await moveAssetToFolder(asset.path, asset.folder, destinationFolder);
+  };
+
+  const handleAssetDragStart = (asset: Asset) => {
+    setDraggedAsset({ path: asset.path, folder: asset.folder });
+    setDropFolderPath(null);
+    setFolderActionError(null);
+  };
+
+  const handleAssetDragEnd = () => {
+    setDraggedAsset(null);
+    setDropFolderPath(null);
+  };
+
+  const handleFolderDragOver = (event: React.DragEvent, targetFolderPath: string) => {
+    if (!draggedAsset || draggedAsset.folder === targetFolderPath) {
+      return;
+    }
+
+    event.preventDefault();
+    if (dropFolderPath !== targetFolderPath) {
+      setDropFolderPath(targetFolderPath);
+    }
+  };
+
+  const handleFolderDrop = async (event: React.DragEvent, targetFolderPath: string) => {
+    event.preventDefault();
+    if (!draggedAsset) {
+      return;
+    }
+
+    setDropFolderPath(null);
+    const source = draggedAsset;
+    setDraggedAsset(null);
+    await moveAssetToFolder(source.path, source.folder, targetFolderPath);
   };
 
   const copyToClipboard = (text: string, id: string) => {
@@ -476,6 +585,56 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
 
   const breadcrumbParts = currentFolder ? currentFolder.split('/') : [];
   const currentFolderLabel = currentFolder || 'Root';
+  const folderTree = buildFolderTree(allFolders);
+
+  const renderFolderTree = (nodes: FolderTreeNode[], depth = 0): React.ReactNode => {
+    return nodes.map((node) => {
+      const hasChildren = node.children.length > 0;
+      const isExpanded = expandedFolders[node.path] ?? true;
+      const isActive = node.path === currentFolder;
+      const isDropTarget = dropFolderPath === node.path && draggedAsset?.folder !== node.path;
+
+      return (
+        <React.Fragment key={node.path}>
+          <div
+            className={`flex items-center gap-1 rounded-lg px-2 py-1.5 transition-colors ${
+              isActive
+                ? 'bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-200'
+                : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
+            } ${isDropTarget ? 'ring-2 ring-emerald-500/60' : ''}`}
+            style={{ paddingLeft: `${depth * 12 + 8}px` }}
+            onDragOver={(event) => handleFolderDragOver(event, node.path)}
+            onDrop={(event) => void handleFolderDrop(event, node.path)}
+          >
+            <button
+              onClick={() =>
+                hasChildren
+                  ? setExpandedFolders((previous) => ({ ...previous, [node.path]: !(previous[node.path] ?? true) }))
+                  : void openFolder(node.path)
+              }
+              className="p-0.5 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100"
+              title={hasChildren ? 'Toggle folder tree' : 'Open folder'}
+            >
+              {hasChildren ? (
+                <ChevronRight className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+              ) : (
+                <span className="w-3 h-3 inline-block" />
+              )}
+            </button>
+            <button
+              onClick={() => void openFolder(node.path)}
+              className="min-w-0 flex items-center gap-2 text-left flex-1"
+              title={node.path}
+            >
+              <Folder className="w-4 h-4 flex-shrink-0 text-emerald-500" />
+              <span className="truncate text-sm">{node.name}</span>
+            </button>
+          </div>
+          {hasChildren && isExpanded ? renderFolderTree(node.children, depth + 1) : null}
+        </React.Fragment>
+      );
+    });
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
@@ -516,55 +675,6 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
         </div>
       </div>
 
-      <div className="mb-6 p-4 bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-700 space-y-4">
-        <div className="flex items-center flex-wrap gap-2 text-sm">
-          <button
-            onClick={() => openFolder('')}
-            className="px-2 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
-          >
-            Root
-          </button>
-          {breadcrumbParts.map((part, index) => {
-            const path = breadcrumbParts.slice(0, index + 1).join('/');
-            return (
-              <React.Fragment key={path}>
-                <ChevronRight className="w-3 h-3 text-zinc-400 dark:text-zinc-500" />
-                <button
-                  onClick={() => openFolder(path)}
-                  className="px-2 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
-                >
-                  {part}
-                </button>
-              </React.Fragment>
-            );
-          })}
-        </div>
-
-        <div className="flex flex-col sm:flex-row gap-2">
-          <div className="flex-1 relative">
-            <FolderPlus className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 dark:text-zinc-500" />
-            <input
-              value={newFolderName}
-              onChange={(event) => setNewFolderName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  void handleCreateFolder();
-                }
-              }}
-              placeholder="Create folder in current path..."
-              className="w-full pl-10 pr-3 py-2 text-sm rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
-            />
-          </div>
-          <button
-            onClick={() => void handleCreateFolder()}
-            disabled={folderActionLoading || !newFolderName.trim()}
-            className="px-4 py-2 text-sm rounded-xl bg-zinc-900 text-white font-semibold hover:bg-zinc-800 transition-colors disabled:opacity-50"
-          >
-            {folderActionLoading ? 'Working...' : 'Create Folder'}
-          </button>
-        </div>
-      </div>
-
       {uploading ? (
         <div className="mb-6 rounded-2xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 flex items-start gap-3">
           <Loader2 className="w-4 h-4 mt-0.5 text-emerald-600 dark:text-emerald-400 animate-spin" />
@@ -588,168 +698,259 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
         </div>
       ) : null}
 
-      {loading ? (
-        <div className="py-20 flex flex-col items-center justify-center gap-4">
-          <Loader2 className="w-10 h-10 text-emerald-500 animate-spin" />
-          <p className="text-zinc-500 dark:text-zinc-400">Fetching your assets...</p>
-        </div>
-      ) : assets.length === 0 && folders.length === 0 ? (
-        <div className="py-20 border-2 border-dashed border-zinc-200 dark:border-zinc-700 rounded-3xl flex flex-col items-center justify-center text-center px-4">
-          <div className="w-16 h-16 bg-zinc-50 dark:bg-zinc-950 rounded-2xl flex items-center justify-center text-zinc-300 dark:text-zinc-600 mb-6">
-            <Upload className="w-8 h-8" />
+      <div className="grid grid-cols-1 lg:grid-cols-[280px,1fr] gap-6">
+        <aside className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-2xl overflow-hidden h-fit">
+          <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-700">
+            <p className="text-[11px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Folder Tree</p>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Drag files onto folders to move them.</p>
           </div>
-          <h3 className="text-xl font-bold text-zinc-900 dark:text-zinc-100 mb-2">No assets in {currentFolderLabel}</h3>
-          <p className="text-zinc-500 dark:text-zinc-400 max-w-sm mb-8">
-            Upload files or create a folder to start organizing your asset library.
-          </p>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-            className="flex items-center gap-2 px-6 py-2.5 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border border-zinc-200 dark:border-zinc-700 rounded-xl font-semibold hover:bg-zinc-50 dark:hover:bg-zinc-800/70 transition-all disabled:opacity-50"
-          >
-            {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-            {uploading ? 'Uploading...' : 'Upload First Asset'}
-          </button>
-        </div>
-      ) : (
-        <div className="space-y-6">
-          {folders.length > 0 ? (
-            <div>
-              <p className="text-[11px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider mb-3">Folders</p>
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {folders.map((folder) => (
-                  <div
-                    key={folder.path}
-                    className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-3 flex items-center justify-between gap-3"
+
+          <div className="p-2 space-y-1 max-h-[52vh] overflow-y-auto">
+            <div
+              className={`flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer transition-colors ${
+                currentFolder === ''
+                  ? 'bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-200'
+                  : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
+              } ${dropFolderPath === '' && draggedAsset?.folder !== '' ? 'ring-2 ring-emerald-500/60' : ''}`}
+              onClick={() => void openFolder('')}
+              onDragOver={(event) => handleFolderDragOver(event, '')}
+              onDrop={(event) => void handleFolderDrop(event, '')}
+            >
+              <Folder className="w-4 h-4 text-emerald-500" />
+              <span className="text-sm font-medium">Root</span>
+            </div>
+            {folderTree.length > 0 ? renderFolderTree(folderTree) : (
+              <p className="px-2 py-2 text-xs text-zinc-500 dark:text-zinc-400">No folders yet.</p>
+            )}
+          </div>
+
+          <div className="px-3 py-3 border-t border-zinc-200 dark:border-zinc-700 space-y-2">
+            <div className="relative">
+              <FolderPlus className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 dark:text-zinc-500" />
+              <input
+                value={newFolderName}
+                onChange={(event) => setNewFolderName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    void handleCreateFolder();
+                  }
+                }}
+                placeholder="New folder"
+                className="w-full pl-10 pr-3 py-2 text-sm rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+              />
+            </div>
+            <button
+              onClick={() => void handleCreateFolder()}
+              disabled={folderActionLoading || !newFolderName.trim()}
+              className="w-full px-4 py-2 text-sm rounded-xl bg-zinc-900 text-white font-semibold hover:bg-zinc-800 transition-colors disabled:opacity-50"
+            >
+              {folderActionLoading ? 'Working...' : `Create in ${currentFolderLabel}`}
+            </button>
+          </div>
+        </aside>
+
+        <div>
+          <div className="mb-4 flex items-center flex-wrap gap-2 text-sm">
+            <button
+              onClick={() => void openFolder('')}
+              className="px-2 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
+            >
+              Root
+            </button>
+            {breadcrumbParts.map((part, index) => {
+              const path = breadcrumbParts.slice(0, index + 1).join('/');
+              return (
+                <React.Fragment key={path}>
+                  <ChevronRight className="w-3 h-3 text-zinc-400 dark:text-zinc-500" />
+                  <button
+                    onClick={() => void openFolder(path)}
+                    className="px-2 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
                   >
-                    <button
-                      onClick={() => openFolder(folder.path)}
-                      className="flex items-center gap-2 min-w-0 text-left"
-                      title={folder.path}
-                    >
-                      <Folder className="w-4 h-4 text-emerald-500 flex-shrink-0" />
-                      <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 truncate">{folder.name}</span>
-                    </button>
-                    <button
-                      onClick={() => handleDeleteFolder(folder.path)}
-                      disabled={folderActionLoading}
-                      className="p-1.5 rounded-lg text-zinc-400 dark:text-zinc-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-50"
-                      title="Delete Folder"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
+                    {part}
+                  </button>
+                </React.Fragment>
+              );
+            })}
+          </div>
+
+          {loading ? (
+            <div className="py-20 flex flex-col items-center justify-center gap-4">
+              <Loader2 className="w-10 h-10 text-emerald-500 animate-spin" />
+              <p className="text-zinc-500 dark:text-zinc-400">Fetching your assets...</p>
+            </div>
+          ) : assets.length === 0 && folders.length === 0 ? (
+            <div className="py-20 border-2 border-dashed border-zinc-200 dark:border-zinc-700 rounded-3xl flex flex-col items-center justify-center text-center px-4">
+              <div className="w-16 h-16 bg-zinc-50 dark:bg-zinc-950 rounded-2xl flex items-center justify-center text-zinc-300 dark:text-zinc-600 mb-6">
+                <Upload className="w-8 h-8" />
               </div>
+              <h3 className="text-xl font-bold text-zinc-900 dark:text-zinc-100 mb-2">No assets in {currentFolderLabel}</h3>
+              <p className="text-zinc-500 dark:text-zinc-400 max-w-sm mb-8">
+                Upload files or create a folder to start organizing your asset library.
+              </p>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                className="flex items-center gap-2 px-6 py-2.5 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border border-zinc-200 dark:border-zinc-700 rounded-xl font-semibold hover:bg-zinc-50 dark:hover:bg-zinc-800/70 transition-all disabled:opacity-50"
+              >
+                {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                {uploading ? 'Uploading...' : 'Upload First Asset'}
+              </button>
             </div>
-          ) : null}
-
-          {assets.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              <AnimatePresence>
-                {assets.map((asset) => (
-                  <motion.div
-                    key={asset.sha}
-                    layout
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.95 }}
-                    className="group bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-700 overflow-hidden hover:shadow-xl hover:shadow-zinc-200 dark:hover:shadow-zinc-950/50 transition-all"
-                  >
-                    <div className="aspect-video bg-zinc-50 dark:bg-zinc-950 relative overflow-hidden flex items-center justify-center border-b border-zinc-100 dark:border-zinc-800">
-                      {isImageAsset(asset.name) && getPreviewUrl(asset) ? (
-                        <img
-                          src={getPreviewUrl(asset)!}
-                          alt={asset.name}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                          referrerPolicy="no-referrer"
-                          loading="lazy"
-                          onError={() => handlePreviewError(asset)}
-                        />
-                      ) : (
-                        <FileText className="w-12 h-12 text-zinc-300 dark:text-zinc-600" />
-                      )}
-                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+          ) : (
+            <div className="space-y-6">
+              {folders.length > 0 ? (
+                <div>
+                  <p className="text-[11px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider mb-3">Folders</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                    {folders.map((folder) => (
+                      <div
+                        key={folder.path}
+                        className={`bg-white dark:bg-zinc-900 border rounded-xl px-4 py-3 flex items-center justify-between gap-3 ${
+                          dropFolderPath === folder.path && draggedAsset?.folder !== folder.path
+                            ? 'border-emerald-500 ring-2 ring-emerald-500/40'
+                            : 'border-zinc-200 dark:border-zinc-700'
+                        }`}
+                        onDragOver={(event) => handleFolderDragOver(event, folder.path)}
+                        onDrop={(event) => void handleFolderDrop(event, folder.path)}
+                      >
                         <button
-                          onClick={() => window.open(asset.cdn_url, '_blank')}
-                          className="p-2 bg-white dark:bg-zinc-900 rounded-lg text-zinc-900 dark:text-zinc-100 hover:bg-zinc-50 dark:hover:bg-zinc-800/70 transition-colors"
-                          title="Open in Browser"
+                          onClick={() => void openFolder(folder.path)}
+                          className="flex items-center gap-2 min-w-0 text-left"
+                          title={folder.path}
                         >
-                          <ExternalLink className="w-5 h-5" />
+                          <Folder className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+                          <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 truncate">{folder.name}</span>
                         </button>
                         <button
-                          onClick={() => handleDelete(asset)}
-                          className="p-2 bg-white dark:bg-zinc-900 rounded-lg text-red-600 hover:bg-red-50 transition-colors"
-                          title="Delete Asset"
+                          onClick={() => void handleDeleteFolder(folder.path)}
+                          disabled={folderActionLoading}
+                          className="p-1.5 rounded-lg text-zinc-400 dark:text-zinc-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-50"
+                          title="Delete Folder"
                         >
-                          <Trash2 className="w-5 h-5" />
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
-                    </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
 
-                    <div className="p-4">
-                      <div className="flex items-start justify-between gap-2 mb-4">
-                        <div className="min-w-0">
-                          <h4 className="font-bold text-zinc-900 dark:text-zinc-100 truncate text-sm" title={asset.name}>
-                            {asset.name}
-                          </h4>
-                          <p className="text-xs text-zinc-400 dark:text-zinc-500">{formatSize(asset.size)}</p>
-                          <p className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate mt-1" title={asset.path}>
-                            {asset.path}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="space-y-3">
-                        <div className="flex flex-col gap-1">
-                          <label className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Move To Folder</label>
-                          <div className="flex items-center gap-2">
-                            <select
-                              value={moveTargets[asset.path] ?? currentFolder}
-                              onChange={(event) =>
-                                setMoveTargets((previous) => ({ ...previous, [asset.path]: event.target.value }))
-                              }
-                              className="flex-1 px-2 py-1.5 text-xs rounded-lg bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700"
-                            >
-                              <option value="">Root</option>
-                              {allFolders.map((folderPath) => (
-                                <option key={folderPath} value={folderPath}>
-                                  {folderPath}
-                                </option>
-                              ))}
-                            </select>
+              {assets.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  <AnimatePresence>
+                    {assets.map((asset) => (
+                      <motion.div
+                        key={asset.sha}
+                        layout
+                        draggable
+                        onDragStart={(event) => {
+                          event.dataTransfer.effectAllowed = 'move';
+                          handleAssetDragStart(asset);
+                        }}
+                        onDragEnd={handleAssetDragEnd}
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        className={`group bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-700 overflow-hidden hover:shadow-xl hover:shadow-zinc-200 dark:hover:shadow-zinc-950/50 transition-all ${
+                          draggedAsset?.path === asset.path ? 'opacity-60 cursor-grabbing' : 'cursor-grab'
+                        }`}
+                      >
+                        <div className="aspect-video bg-zinc-50 dark:bg-zinc-950 relative overflow-hidden flex items-center justify-center border-b border-zinc-100 dark:border-zinc-800">
+                          {isImageAsset(asset.name) && getPreviewUrl(asset) ? (
+                            <img
+                              src={getPreviewUrl(asset)!}
+                              alt={asset.name}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                              referrerPolicy="no-referrer"
+                              loading="lazy"
+                              onError={() => handlePreviewError(asset)}
+                            />
+                          ) : (
+                            <FileText className="w-12 h-12 text-zinc-300 dark:text-zinc-600" />
+                          )}
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
                             <button
-                              onClick={() => handleMoveAsset(asset)}
-                              disabled={movingAssetPath === asset.path || (moveTargets[asset.path] ?? currentFolder) === asset.folder}
-                              className="px-2 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-semibold hover:bg-zinc-800 disabled:opacity-50 transition-colors flex items-center gap-1"
+                              onClick={() => window.open(asset.cdn_url, '_blank')}
+                              className="p-2 bg-white dark:bg-zinc-900 rounded-lg text-zinc-900 dark:text-zinc-100 hover:bg-zinc-50 dark:hover:bg-zinc-800/70 transition-colors"
+                              title="Open in Browser"
                             >
-                              {movingAssetPath === asset.path ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowRightLeft className="w-3 h-3" />}
-                              Move
+                              <ExternalLink className="w-5 h-5" />
+                            </button>
+                            <button
+                              onClick={() => handleDelete(asset)}
+                              className="p-2 bg-white dark:bg-zinc-900 rounded-lg text-red-600 hover:bg-red-50 transition-colors"
+                              title="Delete Asset"
+                            >
+                              <Trash2 className="w-5 h-5" />
                             </button>
                           </div>
                         </div>
 
-                        <div className="flex flex-col gap-1">
-                          <label className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Public CDN URL</label>
-                          <div className="flex items-center gap-2 p-2 bg-zinc-50 dark:bg-zinc-950 rounded-lg border border-zinc-100 dark:border-zinc-800">
-                            <code className="text-[10px] text-zinc-600 dark:text-zinc-300 truncate flex-1 font-mono">{asset.cdn_url}</code>
-                            <button
-                              onClick={() => copyToClipboard(asset.cdn_url, asset.sha)}
-                              className="p-1 text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
-                            >
-                              {copying === asset.sha ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                            </button>
+                        <div className="p-4">
+                          <div className="flex items-start justify-between gap-2 mb-4">
+                            <div className="min-w-0">
+                              <h4 className="font-bold text-zinc-900 dark:text-zinc-100 truncate text-sm" title={asset.name}>
+                                {asset.name}
+                              </h4>
+                              <p className="text-xs text-zinc-400 dark:text-zinc-500">{formatSize(asset.size)}</p>
+                              <p className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate mt-1" title={asset.path}>
+                                {asset.path}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="space-y-3">
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Move To Folder</label>
+                              <div className="flex items-center gap-2">
+                                <select
+                                  value={moveTargets[asset.path] ?? currentFolder}
+                                  onChange={(event) =>
+                                    setMoveTargets((previous) => ({ ...previous, [asset.path]: event.target.value }))
+                                  }
+                                  className="flex-1 px-2 py-1.5 text-xs rounded-lg bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700"
+                                >
+                                  <option value="">Root</option>
+                                  {allFolders.map((folderPath) => (
+                                    <option key={folderPath} value={folderPath}>
+                                      {folderPath}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  onClick={() => void handleMoveAsset(asset)}
+                                  disabled={movingAssetPath === asset.path || (moveTargets[asset.path] ?? currentFolder) === asset.folder}
+                                  className="px-2 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-semibold hover:bg-zinc-800 disabled:opacity-50 transition-colors flex items-center gap-1"
+                                >
+                                  {movingAssetPath === asset.path ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowRightLeft className="w-3 h-3" />}
+                                  Move
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Public CDN URL</label>
+                              <div className="flex items-center gap-2 p-2 bg-zinc-50 dark:bg-zinc-950 rounded-lg border border-zinc-100 dark:border-zinc-800">
+                                <code className="text-[10px] text-zinc-600 dark:text-zinc-300 truncate flex-1 font-mono">{asset.cdn_url}</code>
+                                <button
+                                  onClick={() => copyToClipboard(asset.cdn_url, asset.sha)}
+                                  className="p-1 text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+                                >
+                                  {copying === asset.sha ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                                </button>
+                              </div>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    </div>
-                  </motion.div>
-                ))}
-              </AnimatePresence>
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                </div>
+              ) : null}
             </div>
-          ) : null}
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 };
