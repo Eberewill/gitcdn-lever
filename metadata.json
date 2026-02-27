@@ -1,0 +1,5 @@
+{
+  "name": "GitCDN",
+  "description": "Turn any GitHub repository into a lightweight public asset CDN. Upload, manage, and get instant public URLs for your assets.",
+  "requestFramePermissions": []
+}
