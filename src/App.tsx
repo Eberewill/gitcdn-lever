@@ -161,10 +161,6 @@ const LandingPage = ({ onConnect }: { onConnect: () => void }) => (
       className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-[1.15fr,0.85fr] gap-8 lg:gap-12 items-center relative"
     >
       <div>
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/90 dark:bg-zinc-900/90 text-zinc-700 dark:text-zinc-300 text-xs sm:text-sm font-semibold border border-zinc-200 dark:border-zinc-700 mb-6">
-          <span className="w-2 h-2 rounded-full bg-emerald-500" />
-          Git-native asset workflow
-        </div>
         <h1 className="text-4xl sm:text-5xl lg:text-6xl font-black tracking-tight text-zinc-900 dark:text-zinc-100 leading-tight">
           Publish assets from the same repo you already ship.
         </h1>
@@ -176,19 +172,20 @@ const LandingPage = ({ onConnect }: { onConnect: () => void }) => (
         <div className="mt-8 flex flex-col sm:flex-row gap-3">
           <button
             onClick={onConnect}
-            className="flex items-center justify-center gap-2 px-6 py-3.5 bg-zinc-900 text-white rounded-xl font-semibold hover:bg-zinc-800 transition-all shadow-lg shadow-zinc-200 dark:shadow-zinc-950/30"
+            className="flex items-center justify-center gap-2 px-6 py-3.5 bg-zinc-900 text-white rounded-xl font-semibold hover:bg-zinc-800 transition-all shadow-lg shadow-zinc-200 dark:shadow-zinc-950/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/80 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50 dark:focus-visible:ring-offset-zinc-950 active:ring-2 active:ring-emerald-500/80 active:ring-offset-2 active:ring-offset-zinc-50 dark:active:ring-offset-zinc-950 active:scale-[0.99]"
           >
             <Github className="w-5 h-5" />
             Connect with GitHub
           </button>
-          <a
-            href="https://github.com"
-            target="_blank"
-            className="flex items-center justify-center gap-2 px-6 py-3.5 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border border-zinc-200 dark:border-zinc-700 rounded-xl font-semibold hover:bg-zinc-50 dark:hover:bg-zinc-800/70 transition-all"
+          <button
+            type="button"
+            disabled
+            aria-disabled="true"
+            className="flex items-center justify-center gap-2 px-6 py-3.5 bg-white dark:bg-zinc-900 text-zinc-400 dark:text-zinc-500 border border-zinc-200 dark:border-zinc-700 rounded-xl font-semibold cursor-not-allowed opacity-70"
           >
             <LinkIcon className="w-4 h-4" />
             Docs & Source
-          </a>
+          </button>
         </div>
 
         <div className="mt-8 flex flex-wrap gap-2">
