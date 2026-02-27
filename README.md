@@ -72,10 +72,22 @@ Users authenticate with GitHub, select a repo, upload assets into `assets/`, and
    ```
 4. Deploy.
 
+## Vercel Production Checks
+
+After deploy, verify these endpoints:
+
+- `GET /api/health` should return `ok: true` and all required config flags as `true`.
+- `GET /api/auth/url` should return a JSON payload with GitHub authorize URL.
+- `GET /api/me` should return `401` before login, then user JSON after login.
+
+If `/api/auth/url` is `404`, redeploy and confirm your deployment includes `api/[...route].ts`.
+If `/api/me` is `500`, check Vercel environment variables (`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and one of `SESSION_SECRET` or `TOKEN_ENCRYPTION_KEY`).
+
 ## GitHub OAuth App Setup
 
 - Homepage URL: your app URL (local or deployed)
 - Authorization callback URL: must exactly match `/api/auth/callback`
+- Example deployed callback URL: `https://gitcdn-lever.vercel.app/api/auth/callback`
 - OAuth scopes requested by app: `repo`, `user`
 
 ## Environment Variables

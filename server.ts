@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import { createApiApp } from "./src/backend/api-app";
+import { createApiApp } from "./src/backend/api-app.js";
 
 const PORT = Number(process.env.PORT ?? "3000");
 const NODE_ENV = process.env.NODE_ENV ?? "development";

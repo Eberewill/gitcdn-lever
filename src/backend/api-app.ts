@@ -13,25 +13,23 @@ const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET ?? "";
 const APP_URL = process.env.APP_URL?.trim() ?? "";
 const SESSION_SECRET = process.env.SESSION_SECRET ?? "";
 const TOKEN_ENCRYPTION_KEY = process.env.TOKEN_ENCRYPTION_KEY ?? "";
+const HAS_GITHUB_CLIENT_ID = Boolean(GITHUB_CLIENT_ID);
+const HAS_GITHUB_CLIENT_SECRET = Boolean(GITHUB_CLIENT_SECRET);
+const HAS_GITHUB_OAUTH_CONFIG = HAS_GITHUB_CLIENT_ID && HAS_GITHUB_CLIENT_SECRET;
+const HAS_CRYPTO_CONFIG = Boolean(SESSION_SECRET || TOKEN_ENCRYPTION_KEY);
 
 const SESSION_COOKIE_NAME = "gitcdn_session";
 const OAUTH_STATE_COOKIE_NAME = "gitcdn_oauth_state";
 
-if (IS_PRODUCTION) {
-  if (!GITHUB_CLIENT_ID || !GITHUB_CLIENT_SECRET) {
-    throw new Error("GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are required in production.");
-  }
-
-  if (!SESSION_SECRET && !TOKEN_ENCRYPTION_KEY) {
-    throw new Error("SESSION_SECRET or TOKEN_ENCRYPTION_KEY is required in production.");
-  }
+if (!HAS_CRYPTO_CONFIG) {
+  const level = IS_PRODUCTION ? "ERROR" : "WARN";
+  console.warn(
+    `[${level}] SESSION_SECRET/TOKEN_ENCRYPTION_KEY not set. Using local fallback key; auth is not safe for production.`,
+  );
 }
-
-if (!SESSION_SECRET && !TOKEN_ENCRYPTION_KEY) {
-  console.warn("SESSION_SECRET/TOKEN_ENCRYPTION_KEY not set. Using local development fallback key.");
-}
-if (!GITHUB_CLIENT_ID || !GITHUB_CLIENT_SECRET) {
-  console.warn("GitHub OAuth env vars are missing. Auth routes will return configuration errors.");
+if (!HAS_GITHUB_OAUTH_CONFIG) {
+  const level = IS_PRODUCTION ? "ERROR" : "WARN";
+  console.warn(`[${level}] GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET missing. OAuth routes will fail.`);
 }
 
 const effectiveCryptoSeed = TOKEN_ENCRYPTION_KEY || SESSION_SECRET || "local-dev-only-change-me";
@@ -91,6 +89,33 @@ function getBaseUrl(req: Request): string {
 
 function getOrigin(req: Request): string {
   return new URL(getBaseUrl(req)).origin;
+}
+
+function ensureCryptoConfigured(res: Response): boolean {
+  if (HAS_CRYPTO_CONFIG) {
+    return true;
+  }
+
+  res.status(500).json({ error: "Server session encryption is not configured." });
+  return false;
+}
+
+function ensureGitHubClientConfigured(res: Response): boolean {
+  if (HAS_GITHUB_CLIENT_ID) {
+    return true;
+  }
+
+  res.status(500).json({ error: "GitHub OAuth is not configured." });
+  return false;
+}
+
+function ensureGitHubOAuthConfigured(res: Response): boolean {
+  if (HAS_GITHUB_OAUTH_CONFIG) {
+    return true;
+  }
+
+  res.status(500).json({ error: "GitHub OAuth is not configured." });
+  return false;
 }
 
 function encryptPayload(payload: unknown): string {
@@ -322,9 +347,27 @@ export function createApiApp() {
 
   app.use(express.json({ limit: "15mb" }));
 
+  app.get("/api/health", (_req, res) => {
+    res.json({
+      ok: true,
+      env: NODE_ENV,
+      configured: {
+        app_url: Boolean(APP_URL),
+        github_client_id: HAS_GITHUB_CLIENT_ID,
+        github_client_secret: HAS_GITHUB_CLIENT_SECRET,
+        session_secret: Boolean(SESSION_SECRET),
+        token_encryption_key: Boolean(TOKEN_ENCRYPTION_KEY),
+      },
+    });
+  });
+
   app.get("/api/auth/url", (req, res) => {
-    if (!GITHUB_CLIENT_ID) {
-      return res.status(500).json({ error: "GitHub OAuth is not configured" });
+    if (!ensureCryptoConfigured(res)) {
+      return;
+    }
+
+    if (!ensureGitHubClientConfigured(res)) {
+      return;
     }
 
     const state = crypto.randomBytes(24).toString("hex");
@@ -350,6 +393,10 @@ export function createApiApp() {
   });
 
   app.get("/api/auth/callback", async (req, res) => {
+    if (!ensureCryptoConfigured(res) || !ensureGitHubOAuthConfigured(res)) {
+      return;
+    }
+
     const code = typeof req.query.code === "string" ? req.query.code : "";
     const state = typeof req.query.state === "string" ? req.query.state : "";
 
@@ -362,10 +409,6 @@ export function createApiApp() {
 
     if (!oauthState || oauthState.state !== state || Date.now() > oauthState.expires_at) {
       return res.status(400).send("Invalid or expired OAuth state. Please try again.");
-    }
-
-    if (!GITHUB_CLIENT_ID || !GITHUB_CLIENT_SECRET) {
-      return res.status(500).send("GitHub OAuth is not configured.");
     }
 
     try {
@@ -422,6 +465,10 @@ export function createApiApp() {
   });
 
   app.get("/api/me", (req, res) => {
+    if (!ensureCryptoConfigured(res)) {
+      return;
+    }
+
     const session = readSession(req);
     if (!session) {
       clearCookie(res, SESSION_COOKIE_NAME);
@@ -442,6 +489,10 @@ export function createApiApp() {
   });
 
   app.get("/api/repos", async (req, res) => {
+    if (!ensureCryptoConfigured(res)) {
+      return;
+    }
+
     const session = requireSession(req, res);
     if (!session) {
       return;
@@ -469,6 +520,10 @@ export function createApiApp() {
   });
 
   app.post("/api/select-repo", (req, res) => {
+    if (!ensureCryptoConfigured(res)) {
+      return;
+    }
+
     const session = requireSession(req, res);
     if (!session) {
       return;
@@ -495,6 +550,10 @@ export function createApiApp() {
   });
 
   app.get("/api/assets", async (req, res) => {
+    if (!ensureCryptoConfigured(res)) {
+      return;
+    }
+
     const session = requireSession(req, res);
     if (!session) {
       return;
@@ -541,6 +600,10 @@ export function createApiApp() {
   });
 
   app.post("/api/upload", async (req, res) => {
+    if (!ensureCryptoConfigured(res)) {
+      return;
+    }
+
     const session = requireSession(req, res);
     if (!session) {
       return;
@@ -590,6 +653,10 @@ export function createApiApp() {
   });
 
   app.delete("/api/assets/:name", async (req, res) => {
+    if (!ensureCryptoConfigured(res)) {
+      return;
+    }
+
     const session = requireSession(req, res);
     if (!session) {
       return;
