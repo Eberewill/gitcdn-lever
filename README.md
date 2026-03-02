@@ -111,6 +111,85 @@ If `/api/me` is `500`, check Vercel environment variables (`GITHUB_CLIENT_ID`, `
 - `npm run preview` Preview production frontend build
 - `npm run lint` Type-check using TypeScript
 
+## Programmatic Upload API (MVP)
+
+You can mint an API app credential from your logged-in dashboard session, then upload files from external services without browser cookies.
+
+### 1) Create API app credential
+
+`POST /api/apps` (requires active session + selected repo)
+
+Body (JSON):
+
+```json
+{
+  "name": "Website Upload Bot",
+  "folder": "api-ingest",
+  "allowed_extensions": ["png", "jpg", "pdf"],
+  "max_bytes": 4194304,
+  "expires_in_days": 90
+}
+```
+
+Response:
+
+```json
+{
+  "app_id": "app_0123456789abcdef",
+  "token_type": "Bearer",
+  "app_secret": "<use-as-bearer-token>",
+  "ingest_url": "https://your-app.vercel.app/api/ingest/app_0123456789abcdef",
+  "repo": "owner/repo",
+  "branch": "main",
+  "base_folder": "api-ingest",
+  "allowed_extensions": ["png", "jpg", "pdf"],
+  "max_bytes": 4194304
+}
+```
+
+### 2) Upload file with app credential
+
+`POST /api/ingest/:appId`
+
+Headers:
+
+- `Authorization: Bearer <app_secret>`
+
+Payload options:
+
+- `multipart/form-data` with `file`, optional `folder`, optional `filename`, optional `message`
+- JSON with `content` (data URL or raw base64), optional `folder`, optional `filename`, optional `message`
+
+Example (multipart):
+
+```bash
+curl -X POST "https://your-app.vercel.app/api/ingest/app_0123456789abcdef" \
+  -H "Authorization: Bearer <app_secret>" \
+  -F "file=@./logo.png" \
+  -F "folder=api-ingest/marketing"
+```
+
+Example response:
+
+```json
+{
+  "success": true,
+  "app_id": "app_0123456789abcdef",
+  "repo": "owner/repo",
+  "branch": "main",
+  "name": "1740931382996-8b0f5f5b49b9b2b4.png",
+  "path": "api-ingest/marketing/1740931382996-8b0f5f5b49b9b2b4.png",
+  "cdn_url": "https://cdn.jsdelivr.net/gh/owner/repo@main/assets/api-ingest/marketing/1740931382996-8b0f5f5b49b9b2b4.png"
+}
+```
+
+### Notes
+
+- API app tokens are encrypted and include repo/branch scope.
+- If `folder` is set during app creation, uploads are restricted to that folder subtree.
+- Current absolute server-side cap is 15 MB (`max_bytes` must be <= 15 MB).
+- If the target filename already exists, upload returns `409`.
+
 ## Free-Tier Notes
 
 - Works without paid infrastructure (no managed DB required).

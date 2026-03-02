@@ -2,6 +2,7 @@ import crypto from "crypto";
 import express, { type Request, type Response } from "express";
 import axios from "axios";
 import { Octokit } from "@octokit/rest";
+import multer from "multer";
 
 const NODE_ENV = process.env.NODE_ENV ?? "development";
 const IS_PRODUCTION = NODE_ENV === "production";
@@ -21,6 +22,10 @@ const HAS_CRYPTO_CONFIG = Boolean(SESSION_SECRET || TOKEN_ENCRYPTION_KEY);
 const SESSION_COOKIE_NAME = "gitcdn_session";
 const OAUTH_STATE_COOKIE_NAME = "gitcdn_oauth_state";
 const ASSETS_ROOT_PATH = "assets";
+const API_APP_DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
+const API_APP_ABSOLUTE_MAX_BYTES = 15 * 1024 * 1024;
+const API_APP_DEFAULT_TTL_DAYS = 90;
+const API_APP_MAX_TTL_DAYS = 365;
 
 if (!HAS_CRYPTO_CONFIG) {
   const level = IS_PRODUCTION ? "ERROR" : "WARN";
@@ -78,6 +83,225 @@ type AssetFolder = {
   path: string;
   parent: string | null;
 };
+
+type IngestAppTokenPayload = {
+  version: 1;
+  app_id: string;
+  app_name: string;
+  github_token: string;
+  owner: string;
+  repo: string;
+  branch: string;
+  base_folder: string;
+  allowed_extensions: string[];
+  max_bytes: number;
+  issued_at: number;
+  expires_at: number;
+};
+
+function parseIngestAppId(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!/^app_[a-f0-9]{16}$/.test(trimmed)) {
+    return null;
+  }
+
+  return trimmed;
+}
+
+function sanitizeAppName(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 64) {
+    return null;
+  }
+
+  if (!/^[A-Za-z0-9 _.-]+$/.test(trimmed)) {
+    return null;
+  }
+
+  return trimmed;
+}
+
+function parsePositiveInteger(value: unknown): number | null {
+  if (typeof value === "number") {
+    if (!Number.isInteger(value) || value <= 0) {
+      return null;
+    }
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed || !/^\d+$/.test(trimmed)) {
+      return null;
+    }
+    const parsed = Number.parseInt(trimmed, 10);
+    return parsed > 0 ? parsed : null;
+  }
+
+  return null;
+}
+
+function parseApiAppMaxBytes(value: unknown): number | null {
+  if (value == null || value === "") {
+    return API_APP_DEFAULT_MAX_BYTES;
+  }
+
+  const parsed = parsePositiveInteger(value);
+  if (!parsed || parsed > API_APP_ABSOLUTE_MAX_BYTES) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function parseApiAppTtlDays(value: unknown): number | null {
+  if (value == null || value === "") {
+    return API_APP_DEFAULT_TTL_DAYS;
+  }
+
+  const parsed = parsePositiveInteger(value);
+  if (!parsed || parsed > API_APP_MAX_TTL_DAYS) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function sanitizeExtension(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim().toLowerCase().replace(/^\./, "");
+  if (!trimmed || !/^[a-z0-9]{1,10}$/.test(trimmed)) {
+    return null;
+  }
+
+  return trimmed;
+}
+
+function parseAllowedExtensions(value: unknown): string[] | null {
+  if (value == null) {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const extensions = new Set<string>();
+  for (const entry of value) {
+    const extension = sanitizeExtension(entry);
+    if (!extension) {
+      return null;
+    }
+    extensions.add(extension);
+  }
+
+  return Array.from(extensions);
+}
+
+function parseBearerToken(req: Request): string | null {
+  const authHeader = firstHeaderValue(req.headers.authorization);
+  if (!authHeader) {
+    return null;
+  }
+
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!match) {
+    return null;
+  }
+
+  const token = match[1]?.trim();
+  return token ? token : null;
+}
+
+function normalizeRawBase64Payload(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (trimmed.toLowerCase().startsWith("data:")) {
+    return extractBase64Payload(trimmed);
+  }
+
+  if (!/^[a-z0-9+/=\r\n]+$/i.test(trimmed)) {
+    return null;
+  }
+
+  return trimmed.replace(/\s+/g, "");
+}
+
+function isDescendantOrSameFolder(baseFolder: string, targetFolder: string): boolean {
+  if (!baseFolder) {
+    return true;
+  }
+
+  return targetFolder === baseFolder || targetFolder.startsWith(`${baseFolder}/`);
+}
+
+function resolveIngestFolder(requestedFolder: unknown, baseFolder: string): string | null {
+  const normalizedInput = normalizeFolderPath(requestedFolder);
+  if (normalizedInput == null) {
+    return null;
+  }
+
+  const targetFolder = normalizedInput || baseFolder;
+  if (!isDescendantOrSameFolder(baseFolder, targetFolder)) {
+    return null;
+  }
+
+  return targetFolder;
+}
+
+function isIngestAppTokenPayload(payload: unknown): payload is IngestAppTokenPayload {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  const data = payload as IngestAppTokenPayload;
+
+  return (
+    data.version === 1 &&
+    typeof data.app_id === "string" &&
+    parseIngestAppId(data.app_id) === data.app_id &&
+    typeof data.app_name === "string" &&
+    Boolean(data.app_name.trim()) &&
+    typeof data.github_token === "string" &&
+    Boolean(data.github_token) &&
+    typeof data.owner === "string" &&
+    Boolean(data.owner) &&
+    typeof data.repo === "string" &&
+    Boolean(data.repo) &&
+    typeof data.branch === "string" &&
+    Boolean(data.branch) &&
+    typeof data.base_folder === "string" &&
+    normalizeFolderPath(data.base_folder) === data.base_folder &&
+    Array.isArray(data.allowed_extensions) &&
+    data.allowed_extensions.every((ext) => sanitizeExtension(ext) === ext) &&
+    typeof data.max_bytes === "number" &&
+    Number.isFinite(data.max_bytes) &&
+    data.max_bytes > 0 &&
+    data.max_bytes <= API_APP_ABSOLUTE_MAX_BYTES &&
+    typeof data.issued_at === "number" &&
+    Number.isFinite(data.issued_at) &&
+    typeof data.expires_at === "number" &&
+    Number.isFinite(data.expires_at)
+  );
+}
 
 function firstHeaderValue(value: string | string[] | undefined): string | undefined {
   if (!value) {
@@ -482,13 +706,24 @@ function extensionFromMimeType(mimeType: string | null): string | null {
   return mimeToExt[mimeType] ?? null;
 }
 
+function inferAssetExtension(
+  originalName: string | null,
+  mimeType: string | null,
+  encodedContent: unknown,
+): string | null {
+  return (
+    extractExtensionFromName(originalName) ??
+    extensionFromMimeType(mimeType) ??
+    extensionFromMimeType(extractMimeType(encodedContent))
+  );
+}
+
 function generateAnonymousAssetName(
   originalName: string | null,
   encodedContent: unknown,
+  mimeType: string | null = null,
 ): string {
-  const extension =
-    extractExtensionFromName(originalName) ??
-    extensionFromMimeType(extractMimeType(encodedContent));
+  const extension = inferAssetExtension(originalName, mimeType, encodedContent);
   const baseName = `${Date.now()}-${crypto.randomBytes(8).toString("hex")}`;
 
   return extension ? `${baseName}.${extension}` : baseName;
@@ -665,6 +900,10 @@ export function createApiApp() {
   }
 
   app.use(express.json({ limit: "15mb" }));
+  const ingestUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: API_APP_ABSOLUTE_MAX_BYTES },
+  });
 
   app.get("/api/health", (_req, res) => {
     res.json({
@@ -866,6 +1105,225 @@ export function createApiApp() {
     });
 
     res.json({ success: true });
+  });
+
+  app.post("/api/apps", (req, res) => {
+    if (!ensureCryptoConfigured(res)) {
+      return;
+    }
+
+    const session = requireSession(req, res);
+    if (!session) {
+      return;
+    }
+
+    const selection = getRepoSelection(session);
+    if (!selection) {
+      return res.status(400).json({ error: "Select a repository before creating an API app." });
+    }
+
+    const providedName = req.body?.name;
+    const appName = providedName == null ? "GitCDN Ingest App" : sanitizeAppName(providedName);
+    if (!appName) {
+      return res.status(400).json({ error: "Invalid app name." });
+    }
+
+    const baseFolder = normalizeFolderPath(req.body?.folder);
+    if (baseFolder == null) {
+      return res.status(400).json({ error: "Invalid folder path." });
+    }
+
+    const allowedExtensions = parseAllowedExtensions(req.body?.allowed_extensions);
+    if (!allowedExtensions) {
+      return res.status(400).json({ error: "allowed_extensions must be an array of valid extensions." });
+    }
+
+    const maxBytes = parseApiAppMaxBytes(req.body?.max_bytes);
+    if (!maxBytes) {
+      return res
+        .status(400)
+        .json({ error: `max_bytes must be a positive integer up to ${API_APP_ABSOLUTE_MAX_BYTES}.` });
+    }
+
+    const ttlDays = parseApiAppTtlDays(req.body?.expires_in_days);
+    if (!ttlDays) {
+      return res
+        .status(400)
+        .json({ error: `expires_in_days must be a positive integer up to ${API_APP_MAX_TTL_DAYS}.` });
+    }
+
+    const now = Date.now();
+    const expiresAt = now + ttlDays * 24 * 60 * 60 * 1000;
+    const appId = `app_${crypto.randomBytes(8).toString("hex")}`;
+    const appTokenPayload: IngestAppTokenPayload = {
+      version: 1,
+      app_id: appId,
+      app_name: appName,
+      github_token: session.github_token,
+      owner: selection.owner,
+      repo: selection.repo,
+      branch: selection.branch,
+      base_folder: baseFolder,
+      allowed_extensions: allowedExtensions,
+      max_bytes: maxBytes,
+      issued_at: now,
+      expires_at: expiresAt,
+    };
+
+    res.status(201).json({
+      app_id: appId,
+      app_name: appName,
+      token_type: "Bearer",
+      app_secret: encryptPayload(appTokenPayload),
+      ingest_url: `${getBaseUrl(req)}/api/ingest/${appId}`,
+      repo: `${selection.owner}/${selection.repo}`,
+      branch: selection.branch,
+      base_folder: baseFolder,
+      allowed_extensions: allowedExtensions,
+      max_bytes: maxBytes,
+      issued_at: now,
+      expires_at: expiresAt,
+    });
+  });
+
+  app.post("/api/ingest/:appId", (req, res) => {
+    ingestUpload.single("file")(req, res, async (uploadError: unknown) => {
+      if (uploadError) {
+        if (uploadError instanceof multer.MulterError && uploadError.code === "LIMIT_FILE_SIZE") {
+          return res.status(413).json({
+            error: `File exceeds the absolute API app upload limit of ${API_APP_ABSOLUTE_MAX_BYTES} bytes.`,
+          });
+        }
+
+        console.error("Ingest upload parser error:", uploadError);
+        return res.status(400).json({ error: "Invalid file upload payload." });
+      }
+
+      const appId = parseIngestAppId(req.params.appId);
+      if (!appId) {
+        return res.status(400).json({ error: "Invalid app id." });
+      }
+
+      const bearerToken = parseBearerToken(req);
+      if (!bearerToken) {
+        return res.status(401).json({ error: "Missing Bearer token." });
+      }
+
+      const appTokenPayload = decryptPayload<IngestAppTokenPayload>(bearerToken);
+      if (!isIngestAppTokenPayload(appTokenPayload)) {
+        return res.status(401).json({ error: "Invalid API app token." });
+      }
+
+      if (appTokenPayload.app_id !== appId) {
+        return res.status(401).json({ error: "API app token does not match app id." });
+      }
+
+      if (Date.now() > appTokenPayload.expires_at) {
+        return res.status(401).json({ error: "API app token has expired." });
+      }
+
+      const targetFolder = resolveIngestFolder(req.body?.folder, appTokenPayload.base_folder);
+      if (targetFolder == null) {
+        return res.status(400).json({ error: "Invalid folder path or outside API app scope." });
+      }
+
+      const uploadedFile = req.file;
+      const requestedNameInput = req.body?.filename ?? req.body?.name;
+      const requestedName = requestedNameInput == null ? null : sanitizeAssetName(requestedNameInput);
+      if (requestedNameInput != null && !requestedName) {
+        return res.status(400).json({ error: "Invalid filename." });
+      }
+
+      const originalName = sanitizeAssetName(uploadedFile?.originalname) ?? requestedName;
+      const mimeType =
+        (typeof uploadedFile?.mimetype === "string" ? uploadedFile.mimetype.toLowerCase() : null) ??
+        extractMimeType(req.body?.content);
+
+      const rawBase64Content = uploadedFile
+        ? uploadedFile.buffer.toString("base64")
+        : normalizeRawBase64Payload(req.body?.content);
+      if (!rawBase64Content) {
+        return res
+          .status(400)
+          .json({ error: "Missing file content. Send multipart 'file' or JSON/base64 content." });
+      }
+
+      const buffer = Buffer.from(rawBase64Content, "base64");
+      if (!buffer.length) {
+        return res.status(400).json({ error: "Invalid or empty file payload." });
+      }
+
+      if (buffer.length > appTokenPayload.max_bytes) {
+        return res.status(413).json({
+          error: `File exceeds API app limit of ${appTokenPayload.max_bytes} bytes.`,
+        });
+      }
+
+      const inferredExtension = inferAssetExtension(originalName, mimeType, req.body?.content);
+      if (appTokenPayload.allowed_extensions.length > 0) {
+        if (!inferredExtension || !appTokenPayload.allowed_extensions.includes(inferredExtension)) {
+          return res.status(415).json({
+            error: `File type is not allowed. Allowed extensions: ${appTokenPayload.allowed_extensions.join(
+              ", ",
+            )}`,
+          });
+        }
+      }
+
+      let assetName = requestedName;
+      if (!assetName) {
+        assetName = generateAnonymousAssetName(originalName, req.body?.content, mimeType);
+      } else if (!extractExtensionFromName(assetName) && inferredExtension) {
+        assetName = `${assetName}.${inferredExtension}`;
+      }
+
+      const commitMessage =
+        typeof req.body?.message === "string" && req.body.message.trim()
+          ? req.body.message.trim()
+          : `Upload ${assetName} via ${appTokenPayload.app_name}`;
+
+      const selection: RepoSelection = {
+        owner: appTokenPayload.owner,
+        repo: appTokenPayload.repo,
+        branch: appTokenPayload.branch,
+      };
+
+      const relativeAssetPath = targetFolder ? `${targetFolder}/${assetName}` : assetName;
+      const assetPath = joinAssetRepoPath(relativeAssetPath);
+      const octokit = new Octokit({ auth: appTokenPayload.github_token });
+
+      try {
+        await octokit.repos.createOrUpdateFileContents({
+          owner: selection.owner,
+          repo: selection.repo,
+          path: assetPath,
+          branch: selection.branch,
+          message: commitMessage,
+          content: buffer.toString("base64"),
+        });
+
+        return res.json({
+          success: true,
+          app_id: appTokenPayload.app_id,
+          app_name: appTokenPayload.app_name,
+          repo: `${selection.owner}/${selection.repo}`,
+          branch: selection.branch,
+          name: assetName,
+          path: relativeAssetPath,
+          folder: targetFolder,
+          size: buffer.length,
+          cdn_url: toCdnUrl(selection, assetPath),
+          download_url: toRawGitHubUrl(selection, assetPath),
+        });
+      } catch (error: any) {
+        if (error?.status === 422) {
+          return res.status(409).json({ error: "A file already exists at the target path." });
+        }
+
+        console.error("API ingest upload error:", error);
+        return res.status(500).json({ error: "Programmatic upload failed." });
+      }
+    });
   });
 
   app.get("/api/assets", async (req, res) => {
