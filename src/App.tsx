@@ -732,8 +732,7 @@ const Dashboard = memo<{
   const [apiAppError, setApiAppError] = useState<string | null>(null);
   const [createdApiApp, setCreatedApiApp] = useState<ApiAppCredential | null>(null);
 
-  const fetchAssets = useCallback(async (folderOverride?: string) => {
-    const targetFolder = folderOverride ?? currentFolder;
+  const fetchAssets = useCallback(async (targetFolder: string) => {
     try {
       const params = new URLSearchParams();
       if (targetFolder) params.set('folder', targetFolder);
@@ -762,11 +761,12 @@ const Dashboard = memo<{
     } finally {
       setLoading(false);
     }
-  }, [currentFolder]);
+  }, []);
 
   useEffect(() => {
     fetchAssets('');
-  }, [fetchAssets]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const filteredAssets = useMemo(() => {
     if (!searchQuery) return assets;
