@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { 
   Github, 
   Upload, 
@@ -16,9 +16,23 @@ import {
   Folder,
   FolderPlus,
   ArrowRightLeft,
-  KeyRound
+  KeyRound,
+  Settings,
+  Database,
+  Cloud,
+  Menu,
+  X,
+  ChevronDown,
+  HardDrive,
+  Shield,
+  Zap,
+  Globe,
+  LayoutGrid,
+  List,
+  Image as ImageIcon,
+  File,
+  Video
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
 
 // --- Types ---
 
@@ -79,42 +93,32 @@ interface FolderTreeNode {
   children: FolderTreeNode[];
 }
 
-function getParentFolderPath(path: string): string {
+// --- Utilities ---
+
+const getParentFolderPath = (path: string): string => {
   const lastSlash = path.lastIndexOf('/');
-  if (lastSlash < 0) {
-    return '';
-  }
-
+  if (lastSlash < 0) return '';
   return path.slice(0, lastSlash);
-}
+};
 
-function getFolderDisplayName(path: string): string {
+const getFolderDisplayName = (path: string): string => {
   const parentPath = getParentFolderPath(path);
-  if (!parentPath) {
-    return path;
-  }
-
+  if (!parentPath) return path;
   return path.slice(parentPath.length + 1);
-}
+};
 
-function buildFolderTree(paths: string[]): FolderTreeNode[] {
+const buildFolderTree = (paths: string[]): FolderTreeNode[] => {
   const sortedPaths = [...new Set(paths)].sort((a, b) => a.localeCompare(b));
   const nodeMap = new Map<string, FolderTreeNode>();
 
   for (const path of sortedPaths) {
-    nodeMap.set(path, {
-      path,
-      name: getFolderDisplayName(path),
-      children: [],
-    });
+    nodeMap.set(path, { path, name: getFolderDisplayName(path), children: [] });
   }
 
   const roots: FolderTreeNode[] = [];
   for (const path of sortedPaths) {
     const node = nodeMap.get(path);
-    if (!node) {
-      continue;
-    }
+    if (!node) continue;
 
     const parentPath = getParentFolderPath(path);
     if (parentPath && nodeMap.has(parentPath)) {
@@ -126,207 +130,627 @@ function buildFolderTree(paths: string[]): FolderTreeNode[] {
 
   const sortTree = (nodes: FolderTreeNode[]) => {
     nodes.sort((a, b) => a.name.localeCompare(b.name));
-    for (const node of nodes) {
-      sortTree(node.children);
-    }
+    for (const node of nodes) sortTree(node.children);
   };
 
   sortTree(roots);
   return roots;
-}
+};
 
-// --- Components ---
+const formatSize = (bytes: number): string => {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+};
 
-const Navbar = ({ user, onLogout }: { user: User | null, onLogout: () => void }) => (
-  <nav className="border-b border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 sticky top-0 z-50">
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div className="flex justify-between h-16 items-center">
-        <div className="flex items-center gap-2">
-          <div className="bg-zinc-900 p-1.5 rounded-lg">
-            <Github className="w-6 h-6 text-white" />
-          </div>
-          <span className="font-bold text-xl tracking-tight text-zinc-900 dark:text-zinc-100">GitCDN</span>
-        </div>
-        
-        {user && (
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-50 dark:bg-zinc-950 rounded-full border border-zinc-200 dark:border-zinc-700">
-              <img src={user.avatar_url} alt={user.username} className="w-6 h-6 rounded-full" />
-              <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">{user.username}</span>
-            </div>
-            <button 
-              onClick={onLogout}
-              className="p-2 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
-            >
-              <LogOut className="w-5 h-5" />
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  </nav>
-);
+// --- UI Components ---
 
-const LandingPage = ({ onConnect }: { onConnect: () => void }) => (
-  <div className="h-full px-4 py-12 sm:py-16 bg-zinc-50 dark:bg-zinc-950 relative overflow-hidden">
-    <div className="absolute -top-24 -right-16 w-72 h-72 bg-emerald-400/20 dark:bg-emerald-500/15 blur-3xl rounded-full pointer-events-none" />
-    <div className="absolute top-1/2 -left-24 w-64 h-64 bg-zinc-300/20 dark:bg-zinc-700/25 blur-3xl rounded-full pointer-events-none" />
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-[1.15fr,0.85fr] gap-8 lg:gap-12 items-center relative"
-    >
-      <div>
-        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-black tracking-tight text-zinc-900 dark:text-zinc-100 leading-tight">
-          Publish assets from the same repo you already ship.
-        </h1>
-        <p className="mt-5 text-lg text-zinc-600 dark:text-zinc-300 max-w-2xl leading-relaxed">
-          GitCDN gives your team a clean path from upload to public URL without adding another storage vendor.
-          Keep files in GitHub, deliver via jsDelivr.
-        </p>
+const Button = memo<{
+  children: React.ReactNode;
+  variant?: 'primary' | 'secondary' | 'tertiary' | 'ghost' | 'danger';
+  size?: 'sm' | 'md' | 'lg';
+  onClick?: () => void;
+  disabled?: boolean;
+  loading?: boolean;
+  icon?: React.ReactNode;
+  className?: string;
+  type?: 'button' | 'submit';
+}>(({ children, variant = 'primary', size = 'md', onClick, disabled, loading, icon, className = '', type = 'button' }) => {
+  const baseStyles = 'inline-flex items-center justify-center gap-2 font-medium transition-all duration-150 rounded-lg focus:outline-none focus:ring-2 focus:ring-offset-2 cursor-pointer';
+  
+  const variantStyles = {
+    primary: 'bg-[#1a73e8] text-white hover:bg-[#1557b0] focus:ring-[#1a73e8] shadow-sm',
+    secondary: 'bg-white text-[#202124] border border-[#dadce0] hover:bg-[#f8f9fa] hover:border-[#9aa0a6] focus:ring-[#1a73e8] dark:bg-[#202124] dark:text-[#e8eaed] dark:border-[#5f6368] dark:hover:bg-[#3c4043]',
+    tertiary: 'bg-transparent text-[#1a73e8] hover:bg-[#e8f0fe] focus:ring-[#1a73e8]',
+    ghost: 'bg-transparent text-[#5f6368] hover:bg-[#e8eaed] hover:text-[#202124] focus:ring-[#1a73e8]',
+    danger: 'bg-[#d93025] text-white hover:bg-[#b31412] focus:ring-[#d93025]'
+  };
 
-        <div className="mt-8 flex flex-col sm:flex-row gap-3">
-          <button
-            onClick={onConnect}
-            className="flex items-center justify-center gap-2 px-6 py-3.5 bg-zinc-900 text-white rounded-xl font-semibold hover:bg-zinc-800 transition-all shadow-lg shadow-zinc-200 dark:shadow-zinc-950/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/80 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50 dark:focus-visible:ring-offset-zinc-950 active:ring-2 active:ring-emerald-500/80 active:ring-offset-2 active:ring-offset-zinc-50 dark:active:ring-offset-zinc-950 active:scale-[0.99]"
-          >
-            <Github className="w-5 h-5" />
-            Connect with GitHub
-          </button>
-          <button
-            type="button"
-            disabled
-            aria-disabled="true"
-            className="flex items-center justify-center gap-2 px-6 py-3.5 bg-white dark:bg-zinc-900 text-zinc-400 dark:text-zinc-500 border border-zinc-200 dark:border-zinc-700 rounded-xl font-semibold cursor-not-allowed opacity-70"
-          >
-            <LinkIcon className="w-4 h-4" />
-            Docs & Source
-          </button>
-        </div>
-
-        <div className="mt-8 flex flex-wrap gap-2">
-          {['OAuth login', 'Folder-based library', 'Instant CDN URLs'].map((badge) => (
-            <span key={badge} className="px-3 py-1.5 rounded-full text-xs font-semibold bg-zinc-100 dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700">
-              {badge}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      <div className="bg-white dark:bg-zinc-900 rounded-3xl border border-zinc-200 dark:border-zinc-700 shadow-xl shadow-zinc-200/60 dark:shadow-zinc-950/40 overflow-hidden">
-        <div className="px-5 py-4 border-b border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950/60">
-          <p className="text-sm font-bold text-zinc-900 dark:text-zinc-100">How teams use GitCDN</p>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Fast path from repository to production asset URL.</p>
-        </div>
-        <div className="p-5 space-y-4">
-          {[
-            { step: '01', title: 'Connect GitHub', desc: 'Authorize once and pick a repository branch.' },
-            { step: '02', title: 'Organize by folders', desc: 'Group files by product area or release.' },
-            { step: '03', title: 'Ship public links', desc: 'Copy CDN URLs directly into your app.' },
-          ].map((item) => (
-            <div key={item.step} className="flex gap-3 items-start">
-              <div className="w-8 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs font-bold flex items-center justify-center flex-shrink-0">
-                {item.step}
-              </div>
-              <div>
-                <p className="text-sm font-bold text-zinc-900 dark:text-zinc-100">{item.title}</p>
-                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{item.desc}</p>
-              </div>
-            </div>
-          ))}
-
-          <div className="mt-4 p-3 rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700">
-            <p className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider mb-1">Example URL</p>
-            <code className="text-[11px] text-zinc-700 dark:text-zinc-300 break-all">
-              https://cdn.jsdelivr.net/gh/your-org/assets-repo@main/assets/hero/logo.png
-            </code>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2 pt-1">
-            <div className="rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 p-3">
-              <p className="text-[11px] font-semibold text-zinc-900 dark:text-zinc-100">No vendor lock-in</p>
-              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1">Files stay in GitHub.</p>
-            </div>
-            <div className="rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 p-3">
-              <p className="text-[11px] font-semibold text-zinc-900 dark:text-zinc-100">Built for OSS</p>
-              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1">Simple and transparent.</p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </motion.div>
-  </div>
-);
-
-const RepoSelector = ({ repos, onSelect, loading }: { repos: Repo[], onSelect: (repo: Repo) => void, loading: boolean }) => {
-  const [search, setSearch] = useState('');
-  const filteredRepos = repos.filter(r => r.full_name.toLowerCase().includes(search.toLowerCase()));
+  const sizeStyles = {
+    sm: 'px-3 py-1.5 text-xs',
+    md: 'px-4 py-2.5 text-sm',
+    lg: 'px-6 py-3 text-base'
+  };
 
   return (
-    <div className="max-w-2xl mx-auto py-12 px-4">
-      <div className="text-center mb-10">
-        <h2 className="text-3xl font-bold text-zinc-900 dark:text-zinc-100 mb-2">Select a Repository</h2>
-        <p className="text-zinc-500 dark:text-zinc-400">Choose the repository you want to use as your asset CDN.</p>
-      </div>
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled || loading}
+      className={`${baseStyles} ${variantStyles[variant]} ${sizeStyles[size]} ${disabled || loading ? 'opacity-50 cursor-not-allowed' : ''} ${className}`}
+    >
+      {loading && <Loader2 className="w-4 h-4 spinner" />}
+      {!loading && icon}
+      {children}
+    </button>
+  );
+});
 
-      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-zinc-100 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 dark:text-zinc-500" />
-            <input 
-              type="text" 
-              placeholder="Search repositories..." 
-              className="w-full pl-10 pr-4 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+const Card = memo<{
+  children: React.ReactNode;
+  className?: string;
+  hover?: boolean;
+  elevated?: boolean;
+}>(({ children, className = '', hover = false, elevated = false }) => {
+  const baseStyles = 'bg-white dark:bg-[#202124] rounded-xl border border-[#dadce0] dark:border-[#5f6368]';
+  const shadowStyles = elevated ? 'shadow-md' : 'shadow-sm';
+  const hoverStyles = hover ? 'transition-shadow duration-200 hover:shadow-md' : '';
+  
+  return (
+    <div className={`${baseStyles} ${shadowStyles} ${hoverStyles} ${className}`}>
+      {children}
+    </div>
+  );
+});
+
+const Badge = memo<{
+  children: React.ReactNode;
+  variant?: 'primary' | 'success' | 'warning' | 'error' | 'neutral';
+  icon?: React.ReactNode;
+}>(({ children, variant = 'neutral', icon }) => {
+  const styles = {
+    primary: 'bg-[#e8f0fe] text-[#174ea6]',
+    success: 'bg-[#e6f4ea] text-[#188038]',
+    warning: 'bg-[#fef3e8] text-[#b06000]',
+    error: 'bg-[#fce8e8] text-[#d93025]',
+    neutral: 'bg-[#f1f3f4] text-[#5f6368] dark:bg-[#3c4043] dark:text-[#9aa0a6]'
+  };
+
+  return (
+    <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 text-xs font-medium rounded-full ${styles[variant]}`}>
+      {icon}
+      {children}
+    </span>
+  );
+});
+
+const Input = memo<{
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  icon?: React.ReactNode;
+  type?: string;
+  disabled?: boolean;
+  onKeyDown?: (e: React.KeyboardEvent) => void;
+  className?: string;
+}>(({ value, onChange, placeholder, icon, type = 'text', disabled, onKeyDown, className = '' }) => {
+  return (
+    <div className={`relative ${className}`}>
+      {icon && (
+        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-[#9aa0a6]">
+          {icon}
+        </div>
+      )}
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={onKeyDown}
+        placeholder={placeholder}
+        disabled={disabled}
+        className={`w-full py-2.5 text-sm bg-white dark:bg-[#202124] border border-[#dadce0] dark:border-[#5f6368] rounded-lg transition-all duration-150
+          placeholder:text-[#9aa0a6] text-[#202124] dark:text-[#e8eaed]
+          hover:border-[#9aa0a6]
+          focus:outline-none focus:border-[#1a73e8] focus:ring-1 focus:ring-[#1a73e8]
+          disabled:bg-[#f1f3f4] dark:disabled:bg-[#3c4043] disabled:cursor-not-allowed
+          ${icon ? 'pl-10 pr-4' : 'px-4'}`}
+      />
+    </div>
+  );
+});
+
+const EmptyState = memo<{
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  action?: React.ReactNode;
+}>(({ icon, title, description, action }) => {
+  return (
+    <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+      <div className="w-20 h-20 mb-6 rounded-2xl bg-[#f1f3f4] dark:bg-[#3c4043] flex items-center justify-center text-[#9aa0a6]">
+        {icon}
+      </div>
+      <h3 className="text-lg font-medium text-[#202124] dark:text-[#e8eaed] mb-2">{title}</h3>
+      <p className="text-sm text-[#5f6368] dark:text-[#9aa0a6] max-w-sm mb-6">{description}</p>
+      {action}
+    </div>
+  );
+});
+
+const Toast = memo<{
+  message: string;
+  type?: 'success' | 'error';
+  onClose?: () => void;
+}>(({ message, type = 'success', onClose }) => {
+  useEffect(() => {
+    if (onClose) {
+      const timer = setTimeout(onClose, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [onClose]);
+
+  const styles = {
+    success: 'bg-[#188038]',
+    error: 'bg-[#d93025]'
+  };
+
+  return (
+    <div className={`fixed bottom-4 right-4 px-4 py-3 text-white text-sm rounded-lg shadow-lg z-50 ${styles[type]} animate-slide-up flex items-center gap-2`}>
+      {type === 'success' ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
+      {message}
+    </div>
+  );
+});
+
+// --- Feature Components ---
+
+const Header = memo<{
+  user: User | null;
+  onLogout: () => void;
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
+}>(({ user, onLogout, sidebarOpen, onToggleSidebar }) => {
+  return (
+    <header className="sticky top-0 z-40 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-sm border-b border-[#dadce0] dark:border-[#5f6368]">
+      <div className="flex items-center justify-between h-16 px-4 lg:px-6">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={onToggleSidebar}
+            className="p-2 text-[#5f6368] hover:bg-[#f1f3f4] dark:hover:bg-[#3c4043] rounded-lg lg:hidden"
+          >
+            {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
+          
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-gradient-to-br from-[#1a73e8] to-[#174ea6] rounded-lg flex items-center justify-center shadow-sm">
+              <Cloud className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h1 className="text-lg font-semibold text-[#202124] dark:text-[#e8eaed] tracking-tight">GitCDN</h1>
+              <p className="text-xs text-[#9aa0a6] hidden sm:block">Asset Delivery Network</p>
+            </div>
           </div>
         </div>
 
-        <div className="max-h-[400px] overflow-y-auto">
-          {loading ? (
-            <div className="p-12 flex flex-col items-center justify-center gap-4">
-              <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
-              <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading your repositories...</p>
-            </div>
-          ) : filteredRepos.length > 0 ? (
-            filteredRepos.map((repo) => (
+        <div className="flex items-center gap-3">
+          {user ? (
+            <div className="flex items-center gap-3">
+              <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-[#f8f9fa] dark:bg-[#3c4043] rounded-full border border-[#dadce0] dark:border-[#5f6368]">
+                <img src={user.avatar_url} alt={user.username} className="w-6 h-6 rounded-full" />
+                <span className="text-sm font-medium text-[#202124] dark:text-[#e8eaed]">{user.username}</span>
+              </div>
               <button
-                key={repo.full_name}
-                onClick={() => onSelect(repo)}
-                className="w-full flex items-center justify-between p-4 hover:bg-zinc-50 dark:hover:bg-zinc-800/70 transition-colors border-b border-zinc-50 dark:border-zinc-800 last:border-0 group"
+                onClick={onLogout}
+                className="p-2 text-[#5f6368] hover:bg-[#f1f3f4] dark:hover:bg-[#3c4043] hover:text-[#d93025] rounded-lg transition-colors"
+                title="Sign out"
               >
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-zinc-100 dark:bg-zinc-800 rounded-lg group-hover:bg-white dark:group-hover:bg-zinc-900 transition-colors">
-                    <Github className="w-5 h-5 text-zinc-600 dark:text-zinc-300" />
-                  </div>
-                  <div className="text-left">
-                    <p className="font-semibold text-zinc-900 dark:text-zinc-100 text-sm">{repo.name}</p>
-                    <p className="text-xs text-zinc-400 dark:text-zinc-500">{repo.full_name} • {repo.default_branch}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {repo.private ? (
-                    <span className="px-2 py-0.5 bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 text-[10px] font-bold uppercase tracking-wider rounded">Private</span>
-                  ) : (
-                    <span className="px-2 py-0.5 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold uppercase tracking-wider rounded">Public</span>
-                  )}
-                  <ChevronRight className="w-4 h-4 text-zinc-300 dark:text-zinc-600 group-hover:text-zinc-900 dark:group-hover:text-zinc-100 dark:hover:text-zinc-100 transition-colors" />
-                </div>
+                <LogOut className="w-5 h-5" />
               </button>
-            ))
-          ) : (
-            <div className="p-12 text-center">
-              <p className="text-sm text-zinc-500 dark:text-zinc-400">No repositories found.</p>
             </div>
+          ) : (
+            <Button variant="primary" icon={<Github className="w-4 h-4" />}>
+              Sign in
+            </Button>
           )}
         </div>
       </div>
+    </header>
+  );
+});
+
+const Sidebar = memo<{
+  activeView: string;
+  onViewChange: (view: string) => void;
+  isOpen: boolean;
+  onClose: () => void;
+  repo?: string | null;
+}>(({ activeView, onViewChange, isOpen, onClose, repo }) => {
+  const navItems = [
+    { id: 'dashboard', label: 'Assets', icon: Database },
+    { id: 'api', label: 'API Access', icon: KeyRound },
+    { id: 'settings', label: 'Settings', icon: Settings },
+  ];
+
+  return (
+    <>
+      {isOpen && (
+        <div 
+          className="fixed inset-0 bg-black/30 z-30 lg:hidden"
+          onClick={onClose}
+        />
+      )}
+      
+      <aside className={`
+        fixed lg:sticky top-16 left-0 z-30 w-64 h-[calc(100vh-4rem)] 
+        bg-white dark:bg-[#202124] border-r border-[#dadce0] dark:border-[#5f6368]
+        transform transition-transform duration-200 ease-out
+        ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+        overflow-y-auto
+      `}>
+        <div className="p-4">
+          {repo && (
+            <Card className="mb-4 p-3 bg-[#e8f0fe] dark:bg-[#1a73e8]/20 border-[#1a73e8]/20">
+              <div className="flex items-center gap-2 text-[#174ea6] dark:text-[#8ab4f8]">
+                <Github className="w-4 h-4" />
+                <span className="text-xs font-medium truncate">{repo}</span>
+              </div>
+            </Card>
+          )}
+
+          <nav className="space-y-1">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeView === item.id;
+              
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    onViewChange(item.id);
+                    onClose();
+                  }}
+                  className={`
+                    w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-lg transition-colors
+                    ${isActive 
+                      ? 'bg-[#e8f0fe] dark:bg-[#1a73e8]/20 text-[#1a73e8] dark:text-[#8ab4f8]' 
+                      : 'text-[#5f6368] dark:text-[#9aa0a6] hover:bg-[#f1f3f4] dark:hover:bg-[#3c4043] hover:text-[#202124] dark:hover:text-[#e8eaed]'}
+                  `}
+                >
+                  <Icon className="w-5 h-5" />
+                  {item.label}
+                  {isActive && <ChevronRight className="w-4 h-4 ml-auto" />}
+                </button>
+              );
+            })}
+          </nav>
+
+          <div className="mt-6 pt-6 border-t border-[#dadce0] dark:border-[#5f6368]">
+            <p className="text-xs font-medium text-[#9aa0a6] uppercase tracking-wider mb-3 px-3">
+              Quick Links
+            </p>
+            <div className="space-y-1">
+              <a 
+                href="https://github.com" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 px-3 py-2 text-sm text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed] hover:bg-[#f1f3f4] dark:hover:bg-[#3c4043] rounded-lg transition-colors"
+              >
+                <ExternalLink className="w-4 h-4" />
+                GitHub
+              </a>
+              <a 
+                href="https://www.jsdelivr.com" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 px-3 py-2 text-sm text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed] hover:bg-[#f1f3f4] dark:hover:bg-[#3c4043] rounded-lg transition-colors"
+              >
+                <Globe className="w-4 h-4" />
+                jsDelivr
+              </a>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </>
+  );
+});
+
+const LandingPage = memo<{
+  onConnect: () => void;
+}>(({ onConnect }) => {
+  const features = [
+    {
+      icon: <Cloud className="w-6 h-6 text-[#1a73e8]" />,
+      title: 'GitHub-Native',
+      description: 'Your assets live in your repositories. No external storage needed.'
+    },
+    {
+      icon: <Zap className="w-6 h-6 text-[#b06000]" />,
+      title: 'Instant CDN',
+      description: 'Get public URLs immediately via jsDelivr global CDN.'
+    },
+    {
+      icon: <Shield className="w-6 h-6 text-[#188038]" />,
+      title: 'Secure & Private',
+      description: 'OAuth authentication with granular repository access.'
+    },
+    {
+      icon: <HardDrive className="w-6 h-6 text-[#5f6368]" />,
+      title: 'Organized Storage',
+      description: 'Folder-based structure with drag-and-drop management.'
+    }
+  ];
+
+  const steps = [
+    { step: '01', title: 'Connect GitHub', desc: 'Authorize once and select a repository' },
+    { step: '02', title: 'Upload Assets', desc: 'Drag and drop or select files to upload' },
+    { step: '03', title: 'Get CDN URL', desc: 'Copy the generated public URL instantly' }
+  ];
+
+  return (
+    <div className="min-h-[calc(100vh-4rem)] flex flex-col">
+      <section className="relative overflow-hidden bg-gradient-to-br from-[#f8f9fa] to-white dark:from-[#171717] dark:to-[#202124]">
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_rgba(26,115,232,0.1)_0%,_transparent_50%)]" />
+        
+        <div className="relative max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-16 lg:py-24">
+          <div className="grid lg:grid-cols-2 gap-12 items-center">
+            <div className="animate-fade-in">
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-[#e8f0fe] dark:bg-[#1a73e8]/20 text-[#1a73e8] dark:text-[#8ab4f8] rounded-full text-sm font-medium mb-6">
+                <Zap className="w-4 h-4" />
+                Free & Open Source
+              </div>
+              
+              <h1 className="text-4xl sm:text-5xl lg:text-6xl font-semibold text-[#202124] dark:text-[#e8eaed] leading-tight tracking-tight mb-6">
+                Use GitHub as your{' '}
+                <span className="text-[#1a73e8]">Asset CDN</span>
+              </h1>
+              
+              <p className="text-lg text-[#5f6368] dark:text-[#9aa0a6] leading-relaxed mb-8 max-w-xl">
+                Transform any GitHub repository into a lightweight public asset CDN. 
+                Upload images and files, get instant URLs powered by jsDelivr.
+              </p>
+              
+              <div className="flex flex-col sm:flex-row gap-4">
+                <Button variant="primary" size="lg" onClick={onConnect} icon={<Github className="w-5 h-5" />}>
+                  Connect with GitHub
+                </Button>
+                <Button variant="secondary" size="lg" icon={<LinkIcon className="w-5 h-5" />}>
+                  View Documentation
+                </Button>
+              </div>
+
+              <div className="mt-8 flex items-center gap-6 text-sm text-[#5f6368] dark:text-[#9aa0a6]">
+                <span className="flex items-center gap-2">
+                  <Check className="w-4 h-4 text-[#188038]" />
+                  No storage fees
+                </span>
+                <span className="flex items-center gap-2">
+                  <Check className="w-4 h-4 text-[#188038]" />
+                  Open source
+                </span>
+                <span className="flex items-center gap-2">
+                  <Check className="w-4 h-4 text-[#188038]" />
+                  Instant deploy
+                </span>
+              </div>
+            </div>
+
+            <div className="relative animate-slide-up">
+              <Card elevated className="p-6">
+                <div className="flex items-center gap-3 mb-6 pb-4 border-b border-[#dadce0] dark:border-[#5f6368]">
+                  <div className="w-10 h-10 bg-[#e8f0fe] dark:bg-[#1a73e8]/20 rounded-lg flex items-center justify-center">
+                    <Database className="w-5 h-5 text-[#1a73e8]" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-[#202124] dark:text-[#e8eaed]">How it works</h3>
+                    <p className="text-sm text-[#5f6368] dark:text-[#9aa0a6]">Simple three-step process</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  {steps.map((item, index) => (
+                    <div key={item.step} className="flex gap-4">
+                      <div className="flex flex-col items-center">
+                        <div className="w-8 h-8 rounded-full bg-[#1a73e8] text-white text-sm font-semibold flex items-center justify-center">
+                          {item.step}
+                        </div>
+                        {index < steps.length - 1 && (
+                          <div className="w-0.5 h-full bg-[#dadce0] dark:bg-[#5f6368] my-2" />
+                        )}
+                      </div>
+                      <div className="pb-6">
+                        <h4 className="font-medium text-[#202124] dark:text-[#e8eaed]">{item.title}</h4>
+                        <p className="text-sm text-[#5f6368] dark:text-[#9aa0a6]">{item.desc}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-4 p-4 bg-[#f8f9fa] dark:bg-[#3c4043] rounded-lg">
+                  <p className="text-xs font-medium text-[#9aa0a6] uppercase tracking-wider mb-2">Example URL</p>
+                  <code className="text-xs text-[#1a73e8] break-all font-mono">
+                    https://cdn.jsdelivr.net/gh/user/repo@main/assets/logo.png
+                  </code>
+                </div>
+              </Card>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="py-16 bg-white dark:bg-[#202124]">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="text-center mb-12">
+            <h2 className="text-3xl font-semibold text-[#202124] dark:text-[#e8eaed] mb-4">Built for Developers</h2>
+            <p className="text-lg text-[#5f6368] dark:text-[#9aa0a6] max-w-2xl mx-auto">
+              Everything you need to manage and deliver assets without the complexity
+            </p>
+          </div>
+
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            {features.map((feature) => (
+              <Card key={feature.title} hover className="p-6">
+                <div className="w-12 h-12 bg-[#f8f9fa] dark:bg-[#3c4043] rounded-xl flex items-center justify-center mb-4">
+                  {feature.icon}
+                </div>
+                <h3 className="font-semibold text-[#202124] dark:text-[#e8eaed] mb-2">{feature.title}</h3>
+                <p className="text-sm text-[#5f6368] dark:text-[#9aa0a6]">{feature.description}</p>
+              </Card>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="py-16 bg-[#f8f9fa] dark:bg-[#171717]">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+          <h2 className="text-3xl font-semibold text-[#202124] dark:text-[#e8eaed] mb-4">Ready to get started?</h2>
+          <p className="text-lg text-[#5f6368] dark:text-[#9aa0a6] mb-8">
+            Connect your GitHub account and start uploading assets in seconds.
+          </p>
+          <Button variant="primary" size="lg" onClick={onConnect} icon={<Github className="w-5 h-5" />}>
+            Connect with GitHub
+          </Button>
+        </div>
+      </section>
     </div>
   );
-};
+});
 
-const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => void }) => {
+const RepoSelector = memo<{
+  repos: Repo[];
+  onSelect: (repo: Repo) => void;
+  loading: boolean;
+}>(({ repos, onSelect, loading }) => {
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<'all' | 'public' | 'private'>('all');
+
+  const filteredRepos = useMemo(() => {
+    return repos.filter(r => {
+      const matchesSearch = r.full_name.toLowerCase().includes(search.toLowerCase());
+      const matchesFilter = filter === 'all' || (filter === 'private' ? r.private : !r.private);
+      return matchesSearch && matchesFilter;
+    });
+  }, [repos, search, filter]);
+
+  const publicCount = repos.filter(r => !r.private).length;
+  const privateCount = repos.filter(r => r.private).length;
+
+  return (
+    <div className="max-w-3xl mx-auto py-8 px-4">
+      <div className="text-center mb-8">
+        <div className="w-16 h-16 bg-[#e8f0fe] dark:bg-[#1a73e8]/20 rounded-2xl flex items-center justify-center mx-auto mb-4">
+          <Github className="w-8 h-8 text-[#1a73e8]" />
+        </div>
+        <h2 className="text-2xl font-semibold text-[#202124] dark:text-[#e8eaed] mb-2">Select a Repository</h2>
+        <p className="text-[#5f6368] dark:text-[#9aa0a6]">Choose where you want to store your assets</p>
+      </div>
+
+      <Card>
+        <div className="p-4 border-b border-[#dadce0] dark:border-[#5f6368]">
+          <div className="flex flex-col sm:flex-row gap-3">
+            <Input
+              value={search}
+              onChange={setSearch}
+              placeholder="Search repositories..."
+              icon={<Search className="w-4 h-4" />}
+              className="flex-1"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={() => setFilter('all')}
+                className={`px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
+                  filter === 'all' ? 'bg-[#1a73e8] text-white' : 'bg-[#f8f9fa] dark:bg-[#3c4043] text-[#5f6368] dark:text-[#9aa0a6] hover:bg-[#e8eaed] dark:hover:bg-[#5f6368]'
+                }`}
+              >
+                All ({repos.length})
+              </button>
+              <button
+                onClick={() => setFilter('public')}
+                className={`px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
+                  filter === 'public' ? 'bg-[#188038] text-white' : 'bg-[#f8f9fa] dark:bg-[#3c4043] text-[#5f6368] dark:text-[#9aa0a6] hover:bg-[#e8eaed] dark:hover:bg-[#5f6368]'
+                }`}
+              >
+                Public ({publicCount})
+              </button>
+              <button
+                onClick={() => setFilter('private')}
+                className={`px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
+                  filter === 'private' ? 'bg-[#202124] dark:bg-[#e8eaed] text-white dark:text-[#202124]' : 'bg-[#f8f9fa] dark:bg-[#3c4043] text-[#5f6368] dark:text-[#9aa0a6] hover:bg-[#e8eaed] dark:hover:bg-[#5f6368]'
+                }`}
+              >
+                Private ({privateCount})
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="max-h-[500px] overflow-y-auto">
+          {loading ? (
+            <div className="p-12 flex flex-col items-center justify-center gap-4">
+              <Loader2 className="w-8 h-8 text-[#1a73e8] spinner" />
+              <p className="text-sm text-[#5f6368]">Loading repositories...</p>
+            </div>
+          ) : filteredRepos.length > 0 ? (
+            <div className="divide-y divide-[#e8eaed] dark:divide-[#3c4043]">
+              {filteredRepos.map((repo) => (
+                <button
+                  key={repo.full_name}
+                  onClick={() => onSelect(repo)}
+                  className="w-full flex items-center justify-between p-4 hover:bg-[#f8f9fa] dark:hover:bg-[#3c4043] transition-colors text-left group"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 bg-[#f1f3f4] dark:bg-[#3c4043] rounded-lg flex items-center justify-center flex-shrink-0 group-hover:bg-white dark:group-hover:bg-[#5f6368] transition-colors">
+                      <Github className="w-5 h-5 text-[#5f6368]" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-medium text-[#202124] dark:text-[#e8eaed] truncate">{repo.name}</p>
+                      <p className="text-xs text-[#9aa0a6] truncate">{repo.full_name}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 flex-shrink-0">
+                    <Badge variant={repo.private ? 'neutral' : 'success'}>
+                      {repo.private ? 'Private' : 'Public'}
+                    </Badge>
+                    <span className="text-xs text-[#9aa0a6] hidden sm:block">
+                      {repo.default_branch}
+                    </span>
+                    <ChevronRight className="w-5 h-5 text-[#9aa0a6] group-hover:text-[#1a73e8] transition-colors" />
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              icon={<Search className="w-8 h-8" />}
+              title="No repositories found"
+              description={search ? `No results for "${search}"` : "You don't have any repositories yet."}
+            />
+          )}
+        </div>
+      </Card>
+
+      <div className="mt-6 text-center">
+        <p className="text-sm text-[#5f6368]">
+          Don't see your repository?{' '}
+          <button className="text-[#1a73e8] hover:underline font-medium">
+            Refresh list
+          </button>
+        </p>
+      </div>
+    </div>
+  );
+});
+
+// --- Dashboard Component ---
+
+const Dashboard = memo<{
+  user: User;
+  activeView: string;
+  onChangeRepo: () => void;
+  onToast: (message: string, type?: 'success' | 'error') => void;
+}>(({ user, activeView, onChangeRepo, onToast }) => {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [folders, setFolders] = useState<FolderEntry[]>([]);
   const [allFolders, setAllFolders] = useState<string[]>([]);
@@ -345,6 +769,11 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
   const [dropFolderPath, setDropFolderPath] = useState<string | null>(null);
   const [imagePreviewAttempts, setImagePreviewAttempts] = useState<Record<string, number>>({});
   const [copying, setCopying] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [searchQuery, setSearchQuery] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // API App state
   const [apiAppName, setApiAppName] = useState('');
   const [apiAppFolder, setApiAppFolder] = useState('');
   const [apiAppExtensions, setApiAppExtensions] = useState('');
@@ -353,18 +782,15 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
   const [apiAppLoading, setApiAppLoading] = useState(false);
   const [apiAppError, setApiAppError] = useState<string | null>(null);
   const [createdApiApp, setCreatedApiApp] = useState<ApiAppCredential | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const fetchAssets = async (folderOverride?: string) => {
+  const fetchAssets = useCallback(async (folderOverride?: string) => {
     const targetFolder = folderOverride ?? currentFolder;
     try {
       const params = new URLSearchParams();
-      if (targetFolder) {
-        params.set('folder', targetFolder);
-      }
-
+      if (targetFolder) params.set('folder', targetFolder);
       const endpoint = params.toString() ? `/api/assets?${params.toString()}` : '/api/assets';
       const res = await fetch(endpoint);
+      
       if (!res.ok) {
         setAssets([]);
         setFolders([]);
@@ -372,7 +798,7 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
         return;
       }
 
-      const data = (await res.json()) as AssetsResponse;
+      const data = await res.json() as AssetsResponse;
       setAssets(data.files ?? []);
       setFolders(data.folders ?? []);
       setAllFolders(data.all_folders ?? []);
@@ -386,18 +812,26 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
     } finally {
       setLoading(false);
     }
-  };
+  }, [currentFolder]);
 
   useEffect(() => {
-    void fetchAssets('');
-  }, []);
+    fetchAssets('');
+  }, [fetchAssets]);
 
-  const openFolder = async (path: string) => {
+  const filteredAssets = useMemo(() => {
+    if (!searchQuery) return assets;
+    return assets.filter(a => 
+      a.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      a.path.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }, [assets, searchQuery]);
+
+  const openFolder = useCallback(async (path: string) => {
     setLoading(true);
     setFolderActionError(null);
     if (path) {
-      setExpandedFolders((previous) => {
-        const next = { ...previous };
+      setExpandedFolders(prev => {
+        const next = { ...prev };
         let cursor = path;
         while (cursor) {
           next[cursor] = true;
@@ -406,11 +840,10 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
         return next;
       });
     }
-
     await fetchAssets(path);
-  };
+  }, [fetchAssets]);
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     const fileInput = e.target;
     if (!file) return;
@@ -418,6 +851,7 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
     setUploadError(null);
     setUploading(true);
     setUploadingFileName(file.name);
+    
     const reader = new FileReader();
     reader.onloadend = async () => {
       const content = typeof reader.result === 'string' ? reader.result : null;
@@ -433,25 +867,22 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
         const res = await fetch('/api/upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: file.name,
-            folder: currentFolder,
-            content,
-          })
+          body: JSON.stringify({ name: file.name, folder: currentFolder, content })
         });
 
         if (!res.ok) {
           const errorData = await res.json().catch(() => null);
           setUploadError(errorData?.error || 'Upload failed. Please try again.');
+          onToast(errorData?.error || 'Upload failed', 'error');
           return;
         }
 
-        if (res.ok) {
-          await fetchAssets(currentFolder);
-        }
+        onToast('File uploaded successfully');
+        await fetchAssets(currentFolder);
       } catch (err) {
         console.error(err);
         setUploadError('Upload failed. Please try again.');
+        onToast('Upload failed', 'error');
       } finally {
         setUploading(false);
         setUploadingFileName(null);
@@ -459,28 +890,29 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
       }
     };
     reader.readAsDataURL(file);
-  };
+  }, [currentFolder, fetchAssets, onToast]);
 
-  const handleDelete = async (asset: Asset) => {
-    if (!confirm(`Are you sure you want to delete ${asset.path}?`)) return;
+  const handleDelete = useCallback(async (asset: Asset) => {
+    if (!confirm(`Delete "${asset.name}"?`)) return;
     try {
       const params = new URLSearchParams({ path: asset.path, sha: asset.sha });
       await fetch(`/api/assets?${params.toString()}`, { method: 'DELETE' });
+      onToast('File deleted successfully');
       await fetchAssets(currentFolder);
     } catch (err) {
       console.error(err);
+      onToast('Failed to delete file', 'error');
     }
-  };
+  }, [currentFolder, fetchAssets, onToast]);
 
-  const handleCreateFolder = async () => {
+  const handleCreateFolder = useCallback(async () => {
     const trimmed = newFolderName.trim();
-    if (!trimmed) {
-      return;
-    }
+    if (!trimmed) return;
 
     const targetPath = currentFolder ? `${currentFolder}/${trimmed}` : trimmed;
     setFolderActionLoading(true);
     setFolderActionError(null);
+    
     try {
       const res = await fetch('/api/folders', {
         method: 'POST',
@@ -495,6 +927,7 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
       }
 
       setNewFolderName('');
+      onToast('Folder created successfully');
       await fetchAssets(currentFolder);
     } catch (err) {
       console.error(err);
@@ -502,12 +935,10 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
     } finally {
       setFolderActionLoading(false);
     }
-  };
+  }, [newFolderName, currentFolder, fetchAssets, onToast]);
 
-  const handleDeleteFolder = async (folderPath: string) => {
-    if (!confirm(`Delete folder "${folderPath}" and all nested files?`)) {
-      return;
-    }
+  const handleDeleteFolder = useCallback(async (folderPath: string) => {
+    if (!confirm(`Delete folder "${folderPath}" and all its contents?`)) return;
 
     setFolderActionLoading(true);
     setFolderActionError(null);
@@ -523,6 +954,7 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
       const nextFolder = currentFolder.startsWith(`${folderPath}/`) || currentFolder === folderPath
         ? getParentFolderPath(folderPath)
         : currentFolder;
+      onToast('Folder deleted successfully');
       await fetchAssets(nextFolder);
     } catch (err) {
       console.error(err);
@@ -530,36 +962,26 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
     } finally {
       setFolderActionLoading(false);
     }
-  };
+  }, [currentFolder, fetchAssets, onToast]);
 
   const parseExtensionInput = (value: string): string[] | null => {
     const trimmed = value.trim();
-    if (!trimmed) {
-      return [];
-    }
-
-    const entries = trimmed
-      .split(',')
-      .map((entry) => entry.trim().replace(/^\./, '').toLowerCase())
-      .filter(Boolean);
-
-    if (entries.some((entry) => !/^[a-z0-9]{1,10}$/.test(entry))) {
-      return null;
-    }
-
+    if (!trimmed) return [];
+    const entries = trimmed.split(',').map(e => e.trim().replace(/^\./, '').toLowerCase()).filter(Boolean);
+    if (entries.some(e => !/^[a-z0-9]{1,10}$/.test(e))) return null;
     return [...new Set(entries)];
   };
 
-  const handleCreateApiApp = async () => {
+  const handleCreateApiApp = useCallback(async () => {
     const parsedExtensions = parseExtensionInput(apiAppExtensions);
     if (!parsedExtensions) {
-      setApiAppError('Extensions must be comma-separated values like: png,jpg,pdf');
+      setApiAppError('Extensions must be comma-separated like: png,jpg,pdf');
       return;
     }
 
     const parsedMaxMb = Number.parseFloat(apiAppMaxMb);
     if (!Number.isFinite(parsedMaxMb) || parsedMaxMb <= 0) {
-      setApiAppError('Max size (MB) must be a positive number.');
+      setApiAppError('Max size must be a positive number.');
       return;
     }
 
@@ -571,42 +993,40 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
 
     setApiAppLoading(true);
     setApiAppError(null);
+    
     try {
       const targetFolder = apiAppFolder.trim() || currentFolder;
-      const payload = {
-        name: apiAppName.trim() || undefined,
-        folder: targetFolder,
-        allowed_extensions: parsedExtensions,
-        max_bytes: Math.round(parsedMaxMb * 1024 * 1024),
-        expires_in_days: parsedTtlDays,
-      };
-
       const res = await fetch('/api/apps', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          name: apiAppName.trim() || undefined,
+          folder: targetFolder,
+          allowed_extensions: parsedExtensions,
+          max_bytes: Math.round(parsedMaxMb * 1024 * 1024),
+          expires_in_days: parsedTtlDays,
+        }),
       });
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => null);
-        setApiAppError(errorData?.error || 'Failed to create API app credential.');
+        setApiAppError(errorData?.error || 'Failed to create API credential.');
         return;
       }
 
-      const data = (await res.json()) as ApiAppCredential;
+      const data = await res.json() as ApiAppCredential;
       setCreatedApiApp(data);
+      onToast('API credential created');
     } catch (err) {
       console.error(err);
-      setApiAppError('Failed to create API app credential.');
+      setApiAppError('Failed to create API credential.');
     } finally {
       setApiAppLoading(false);
     }
-  };
+  }, [apiAppName, apiAppFolder, apiAppExtensions, apiAppMaxMb, apiAppTtlDays, currentFolder, onToast]);
 
-  const moveAssetToFolder = async (assetPath: string, sourceFolder: string, destinationFolder: string) => {
-    if (destinationFolder === sourceFolder) {
-      return false;
-    }
+  const moveAssetToFolder = useCallback(async (assetPath: string, sourceFolder: string, destinationFolder: string) => {
+    if (destinationFolder === sourceFolder) return false;
 
     setMovingAssetPath(assetPath);
     setFolderActionError(null);
@@ -614,10 +1034,7 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
       const res = await fetch('/api/assets/move', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          path: assetPath,
-          destination_folder: destinationFolder,
-        }),
+        body: JSON.stringify({ path: assetPath, destination_folder: destinationFolder }),
       });
 
       if (!res.ok) {
@@ -626,6 +1043,7 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
         return false;
       }
 
+      onToast('Asset moved successfully');
       await fetchAssets(currentFolder);
       return true;
     } catch (err) {
@@ -635,87 +1053,66 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
     } finally {
       setMovingAssetPath(null);
     }
-  };
+  }, [currentFolder, fetchAssets, onToast]);
 
-  const handleMoveAsset = async (asset: Asset) => {
-    const destinationFolder = moveTargets[asset.path] ?? currentFolder;
-    await moveAssetToFolder(asset.path, asset.folder, destinationFolder);
-  };
+  const copyToClipboard = useCallback((text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopying(id);
+    onToast('Copied to clipboard');
+    setTimeout(() => setCopying(null), 2000);
+  }, [onToast]);
 
-  const handleAssetDragStart = (asset: Asset) => {
+  const isImageAsset = (name: string) => /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i.test(name);
+  const isVideoAsset = (name: string) => /\.(mp4|webm|mov|avi|mkv)$/i.test(name);
+
+  const getPreviewUrl = useCallback((asset: Asset) => {
+    const attempt = imagePreviewAttempts[asset.sha] ?? 0;
+    if (attempt === 0 && asset.download_url) return asset.download_url;
+    if (attempt <= 1 && asset.cdn_url) return asset.cdn_url;
+    return null;
+  }, [imagePreviewAttempts]);
+
+  const handlePreviewError = useCallback((asset: Asset) => {
+    setImagePreviewAttempts(prev => ({
+      ...prev,
+      [asset.sha]: Math.min((prev[asset.sha] ?? 0) + 1, 2),
+    }));
+  }, []);
+
+  const folderTree = useMemo(() => buildFolderTree(allFolders), [allFolders]);
+  const breadcrumbParts = currentFolder ? currentFolder.split('/') : [];
+  const currentFolderLabel = currentFolder || 'Root';
+
+  // Drag and drop handlers
+  const handleAssetDragStart = useCallback((asset: Asset) => {
     setDraggedAsset({ path: asset.path, folder: asset.folder });
     setDropFolderPath(null);
     setFolderActionError(null);
-  };
+  }, []);
 
-  const handleAssetDragEnd = () => {
+  const handleAssetDragEnd = useCallback(() => {
     setDraggedAsset(null);
     setDropFolderPath(null);
-  };
+  }, []);
 
-  const handleFolderDragOver = (event: React.DragEvent, targetFolderPath: string) => {
-    if (!draggedAsset || draggedAsset.folder === targetFolderPath) {
-      return;
-    }
+  const handleFolderDragOver = useCallback((e: React.DragEvent, targetPath: string) => {
+    if (!draggedAsset || draggedAsset.folder === targetPath) return;
+    e.preventDefault();
+    if (dropFolderPath !== targetPath) setDropFolderPath(targetPath);
+  }, [draggedAsset, dropFolderPath]);
 
-    event.preventDefault();
-    if (dropFolderPath !== targetFolderPath) {
-      setDropFolderPath(targetFolderPath);
-    }
-  };
-
-  const handleFolderDrop = async (event: React.DragEvent, targetFolderPath: string) => {
-    event.preventDefault();
-    if (!draggedAsset) {
-      return;
-    }
-
+  const handleFolderDrop = useCallback(async (e: React.DragEvent, targetPath: string) => {
+    e.preventDefault();
+    if (!draggedAsset) return;
     setDropFolderPath(null);
     const source = draggedAsset;
     setDraggedAsset(null);
-    await moveAssetToFolder(source.path, source.folder, targetFolderPath);
-  };
+    await moveAssetToFolder(source.path, source.folder, targetPath);
+  }, [draggedAsset, moveAssetToFolder]);
 
-  const copyToClipboard = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopying(id);
-    setTimeout(() => setCopying(null), 2000);
-  };
-
-  const isImageAsset = (assetName: string) => /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(assetName);
-
-  const getPreviewUrl = (asset: Asset) => {
-    const attempt = imagePreviewAttempts[asset.sha] ?? 0;
-    if (attempt === 0 && asset.download_url) {
-      return asset.download_url;
-    }
-    if (attempt <= 1 && asset.cdn_url) {
-      return asset.cdn_url;
-    }
-    return null;
-  };
-
-  const handlePreviewError = (asset: Asset) => {
-    setImagePreviewAttempts((previous) => ({
-      ...previous,
-      [asset.sha]: Math.min((previous[asset.sha] ?? 0) + 1, 2),
-    }));
-  };
-
-  const formatSize = (bytes: number) => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-
-  const breadcrumbParts = currentFolder ? currentFolder.split('/') : [];
-  const currentFolderLabel = currentFolder || 'Root';
-  const folderTree = buildFolderTree(allFolders);
-
-  const renderFolderTree = (nodes: FolderTreeNode[], depth = 0): React.ReactNode => {
-    return nodes.map((node) => {
+  // Render folder tree recursively
+  const renderFolderTree = useCallback((nodes: FolderTreeNode[], depth = 0): React.ReactNode => {
+    return nodes.map(node => {
       const hasChildren = node.children.length > 0;
       const isExpanded = expandedFolders[node.path] ?? true;
       const isActive = node.path === currentFolder;
@@ -724,273 +1121,347 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
       return (
         <React.Fragment key={node.path}>
           <div
-            className={`flex items-center gap-1 rounded-lg px-2 py-1.5 transition-colors ${
-              isActive
-                ? 'bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-200'
-                : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
-            } ${isDropTarget ? 'ring-2 ring-emerald-500/60' : ''}`}
+            className={`flex items-center gap-1 rounded-lg px-2 py-1.5 transition-colors cursor-pointer ${
+              isActive ? 'bg-[#e8f0fe] dark:bg-[#1a73e8]/20 text-[#1a73e8] dark:text-[#8ab4f8]' : 'hover:bg-[#e8eaed] dark:hover:bg-[#3c4043]'
+            } ${isDropTarget ? 'ring-2 ring-[#1a73e8]' : ''}`}
             style={{ paddingLeft: `${depth * 12 + 8}px` }}
-            onDragOver={(event) => handleFolderDragOver(event, node.path)}
-            onDrop={(event) => void handleFolderDrop(event, node.path)}
+            onDragOver={(e) => handleFolderDragOver(e, node.path)}
+            onDrop={(e) => void handleFolderDrop(e, node.path)}
+            onClick={() => hasChildren 
+              ? setExpandedFolders(prev => ({ ...prev, [node.path]: !(prev[node.path] ?? true) }))
+              : void openFolder(node.path)
+            }
           >
             <button
-              onClick={() =>
-                hasChildren
-                  ? setExpandedFolders((previous) => ({ ...previous, [node.path]: !(previous[node.path] ?? true) }))
-                  : void openFolder(node.path)
-              }
-              className="p-0.5 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100"
-              title={hasChildren ? 'Toggle folder tree' : 'Open folder'}
+              onClick={(e) => {
+                e.stopPropagation();
+                hasChildren 
+                  ? setExpandedFolders(prev => ({ ...prev, [node.path]: !(prev[node.path] ?? true) }))
+                  : void openFolder(node.path);
+              }}
+              className="p-0.5 text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed]"
             >
               {hasChildren ? (
-                <ChevronRight className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                <ChevronRight className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
               ) : (
-                <span className="w-3 h-3 inline-block" />
+                <span className="w-4 h-4 inline-block" />
               )}
             </button>
-            <button
-              onClick={() => void openFolder(node.path)}
-              className="min-w-0 flex items-center gap-2 text-left flex-1"
-              title={node.path}
-            >
-              <Folder className="w-4 h-4 flex-shrink-0 text-emerald-500" />
-              <span className="truncate text-sm">{node.name}</span>
-            </button>
+            <Folder className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-[#1a73e8]' : 'text-[#9aa0a6]'}`} />
+            <span className="truncate text-sm flex-1">{node.name}</span>
           </div>
           {hasChildren && isExpanded ? renderFolderTree(node.children, depth + 1) : null}
         </React.Fragment>
       );
     });
-  };
+  }, [currentFolder, expandedFolders, dropFolderPath, draggedAsset, handleFolderDragOver, handleFolderDrop, openFolder]);
 
-  return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-10">
-        <div>
-          <div className="flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400 mb-1">
-            <Github className="w-4 h-4" />
-            <span>Connected to</span>
-            <button 
-              onClick={onChangeRepo}
-              className="font-semibold text-zinc-900 dark:text-zinc-100 hover:underline flex items-center gap-1"
-            >
-              {user.selected_repo}
-              <span className="text-zinc-400 dark:text-zinc-500">({user.selected_branch || 'main'})</span>
-              <ChevronRight className="w-3 h-3" />
-            </button>
+  // Views
+  if (activeView === 'api') {
+    return (
+      <div className="p-4 lg:p-8 max-w-4xl">
+        <div className="mb-6">
+          <h2 className="text-2xl font-semibold text-[#202124] dark:text-[#e8eaed]">API Access</h2>
+          <p className="text-[#5f6368] dark:text-[#9aa0a6]">Generate credentials for programmatic uploads</p>
+        </div>
+
+        <Card>
+          <div className="p-6 border-b border-[#dadce0] dark:border-[#5f6368]">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-[#e8f0fe] dark:bg-[#1a73e8]/20 rounded-lg flex items-center justify-center">
+                <KeyRound className="w-5 h-5 text-[#1a73e8]" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-[#202124] dark:text-[#e8eaed]">Create API Credential</h3>
+                <p className="text-sm text-[#5f6368] dark:text-[#9aa0a6]">Generate a bearer token for server-to-server uploads</p>
+              </div>
+            </div>
           </div>
-          <h2 className="text-3xl font-bold text-zinc-900 dark:text-zinc-100">Asset Library</h2>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Current folder: <span className="font-semibold text-zinc-700 dark:text-zinc-300">{currentFolderLabel}</span></p>
+
+          <div className="p-6 space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-[#202124] dark:text-[#e8eaed] mb-1.5">App Name</label>
+                <Input
+                  value={apiAppName}
+                  onChange={setApiAppName}
+                  placeholder="My Upload App"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-[#202124] dark:text-[#e8eaed] mb-1.5">Base Folder</label>
+                <Input
+                  value={apiAppFolder}
+                  onChange={setApiAppFolder}
+                  placeholder={`Default: ${currentFolderLabel}`}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-[#202124] dark:text-[#e8eaed] mb-1.5">Allowed Extensions</label>
+                <Input
+                  value={apiAppExtensions}
+                  onChange={setApiAppExtensions}
+                  placeholder="png,jpg,pdf (comma-separated)"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-[#202124] dark:text-[#e8eaed] mb-1.5">Max Size (MB)</label>
+                  <Input
+                    value={apiAppMaxMb}
+                    onChange={setApiAppMaxMb}
+                    type="number"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-[#202124] dark:text-[#e8eaed] mb-1.5">Expires (Days)</label>
+                  <Input
+                    value={apiAppTtlDays}
+                    onChange={setApiAppTtlDays}
+                    type="number"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {apiAppError && (
+              <div className="p-3 bg-[#fce8e8] dark:bg-[#d93025]/20 text-[#d93025] text-sm rounded-lg">
+                {apiAppError}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between pt-2">
+              <p className="text-xs text-[#9aa0a6]">Max file size: 15 MB per upload</p>
+              <Button
+                onClick={handleCreateApiApp}
+                loading={apiAppLoading}
+                icon={<KeyRound className="w-4 h-4" />}
+              >
+                Create Credential
+              </Button>
+            </div>
+
+            {createdApiApp && (
+              <div className="mt-4 p-4 bg-[#e6f4ea] dark:bg-[#188038]/20 border border-[#188038]/20 rounded-lg space-y-3">
+                <div className="flex items-center gap-2 text-[#188038] dark:text-[#81c995]">
+                  <Check className="w-5 h-5" />
+                  <span className="font-medium">Credential created successfully</span>
+                </div>
+                
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-xs font-medium text-[#5f6368] dark:text-[#9aa0a6] uppercase">Ingest URL</label>
+                    <div className="flex items-center gap-2 mt-1 p-2 bg-white dark:bg-[#202124] rounded-lg border border-[#dadce0] dark:border-[#5f6368]">
+                      <code className="text-xs font-mono truncate flex-1">{createdApiApp.ingest_url}</code>
+                      <button
+                        onClick={() => copyToClipboard(createdApiApp.ingest_url, 'api-url')}
+                        className="p-1.5 hover:bg-[#f1f3f4] dark:hover:bg-[#3c4043] rounded transition-colors"
+                      >
+                        {copying === 'api-url' ? <Check className="w-4 h-4 text-[#188038]" /> : <Copy className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <label className="text-xs font-medium text-[#5f6368] dark:text-[#9aa0a6] uppercase">Secret Token</label>
+                    <div className="flex items-center gap-2 mt-1 p-2 bg-white dark:bg-[#202124] rounded-lg border border-[#dadce0] dark:border-[#5f6368]">
+                      <code className="text-xs font-mono truncate flex-1">{createdApiApp.app_secret}</code>
+                      <button
+                        onClick={() => copyToClipboard(createdApiApp.app_secret, 'api-secret')}
+                        className="p-1.5 hover:bg-[#f1f3f4] dark:hover:bg-[#3c4043] rounded transition-colors"
+                      >
+                        {copying === 'api-secret' ? <Check className="w-4 h-4 text-[#188038]" /> : <Copy className="w-4 h-4" />}
+                      </button>
+                    </div>
+                    <p className="text-xs text-[#b06000] mt-1">Save this secret now. It won&apos;t be shown again.</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  if (activeView === 'settings') {
+    return (
+      <div className="p-4 lg:p-8 max-w-2xl">
+        <div className="mb-6">
+          <h2 className="text-2xl font-semibold text-[#202124] dark:text-[#e8eaed]">Settings</h2>
+          <p className="text-[#5f6368] dark:text-[#9aa0a6]">Manage your repository and preferences</p>
+        </div>
+
+        <Card className="mb-6">
+          <div className="p-6 border-b border-[#dadce0] dark:border-[#5f6368]">
+            <h3 className="font-semibold text-[#202124] dark:text-[#e8eaed]">Connected Repository</h3>
+          </div>
+          <div className="p-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-[#f8f9fa] dark:bg-[#3c4043] rounded-lg flex items-center justify-center">
+                  <Github className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="font-medium text-[#202124] dark:text-[#e8eaed]">{user.selected_repo}</p>
+                  <p className="text-sm text-[#5f6368] dark:text-[#9aa0a6]">{user.selected_branch || 'main'} branch</p>
+                </div>
+              </div>
+              <Button variant="secondary" onClick={onChangeRepo}>
+                Change
+              </Button>
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <div className="p-6 border-b border-[#dadce0] dark:border-[#5f6368]">
+            <h3 className="font-semibold text-[#202124] dark:text-[#e8eaed]">About GitCDN</h3>
+          </div>
+          <div className="p-6 space-y-4">
+            <div className="flex items-center justify-between py-2">
+              <span className="text-sm text-[#5f6368] dark:text-[#9aa0a6]">Version</span>
+              <span className="text-sm font-medium text-[#202124] dark:text-[#e8eaed]">1.0.0</span>
+            </div>
+            <div className="flex items-center justify-between py-2">
+              <span className="text-sm text-[#5f6368] dark:text-[#9aa0a6]">License</span>
+              <span className="text-sm font-medium text-[#202124] dark:text-[#e8eaed]">MIT</span>
+            </div>
+            <div className="flex items-center justify-between py-2">
+              <span className="text-sm text-[#5f6368] dark:text-[#9aa0a6]">CDN Provider</span>
+              <span className="text-sm font-medium text-[#202124] dark:text-[#e8eaed]">jsDelivr</span>
+            </div>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  // Default Dashboard (Assets view)
+  return (
+    <div className="p-4 lg:p-8">
+      {/* Header */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6">
+        <div>
+          <div className="flex items-center gap-2 text-sm text-[#5f6368] dark:text-[#9aa0a6] mb-1">
+            <Github className="w-4 h-4" />
+            <span>{user.selected_repo}</span>
+            <span className="text-[#9aa0a6]">•</span>
+            <span className="text-[#9aa0a6]">{user.selected_branch || 'main'}</span>
+          </div>
+          <h2 className="text-2xl font-semibold text-[#202124] dark:text-[#e8eaed]">Assets</h2>
         </div>
 
         <div className="flex items-center gap-3">
-          <input 
-            type="file" 
-            className="hidden" 
-            ref={fileInputRef} 
-            onChange={handleUpload}
-            accept="image/*,video/*,audio/*,application/pdf"
+          <Input
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder="Search assets..."
+            icon={<Search className="w-4 h-4" />}
+            className="w-64"
           />
-          <button 
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-            className="flex items-center gap-2 px-6 py-2.5 bg-zinc-900 text-white rounded-xl font-semibold hover:bg-zinc-800 transition-all disabled:opacity-50"
-          >
-            {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-            {uploading ? 'Uploading...' : 'Upload Asset'}
-          </button>
+          <div className="flex items-center bg-white dark:bg-[#202124] rounded-lg border border-[#dadce0] dark:border-[#5f6368] p-1">
+            <button
+              onClick={() => setViewMode('grid')}
+              className={`p-1.5 rounded transition-colors ${viewMode === 'grid' ? 'bg-[#e8eaed] dark:bg-[#3c4043] text-[#1a73e8]' : 'text-[#9aa0a6]'}`}
+            >
+              <LayoutGrid className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setViewMode('list')}
+              className={`p-1.5 rounded transition-colors ${viewMode === 'list' ? 'bg-[#e8eaed] dark:bg-[#3c4043] text-[#1a73e8]' : 'text-[#9aa0a6]'}`}
+            >
+              <List className="w-4 h-4" />
+            </button>
+          </div>
+          <input type="file" className="hidden" ref={fileInputRef} onChange={handleUpload} accept="image/*,video/*,audio/*,application/pdf" />
+          <Button onClick={() => fileInputRef.current?.click()} loading={uploading} icon={<Plus className="w-4 h-4" />}>
+            Upload
+          </Button>
         </div>
       </div>
 
-      {uploading ? (
-        <div className="mb-6 rounded-2xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 flex items-start gap-3">
-          <Loader2 className="w-4 h-4 mt-0.5 text-emerald-600 dark:text-emerald-400 animate-spin" />
-          <div>
-            <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">Uploading asset...</p>
-            <p className="text-xs text-emerald-700/80 dark:text-emerald-300/80 truncate max-w-xl">{uploadingFileName}</p>
-            <p className="text-xs text-emerald-700/70 dark:text-emerald-300/70 mt-1">Your file will be stored with a randomized private filename.</p>
+      {/* Alerts */}
+      {uploading && (
+        <div className="mb-4 p-4 bg-[#e8f0fe] dark:bg-[#1a73e8]/20 border border-[#1a73e8]/20 rounded-lg flex items-center gap-3">
+          <Loader2 className="w-5 h-5 text-[#1a73e8] spinner" />
+          <div className="flex-1">
+            <p className="text-sm font-medium text-[#174ea6] dark:text-[#8ab4f8]">Uploading {uploadingFileName}</p>
           </div>
         </div>
-      ) : null}
+      )}
 
-      {uploadError ? (
-        <div className="mb-6 rounded-2xl border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/20 px-4 py-3 text-sm font-medium text-red-700 dark:text-red-300">
+      {uploadError && (
+        <div className="mb-4 p-4 bg-[#fce8e8] dark:bg-[#d93025]/20 text-[#d93025] rounded-lg text-sm">
           {uploadError}
         </div>
-      ) : null}
+      )}
 
-      {folderActionError ? (
-        <div className="mb-6 rounded-2xl border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/20 px-4 py-3 text-sm font-medium text-red-700 dark:text-red-300">
+      {folderActionError && (
+        <div className="mb-4 p-4 bg-[#fce8e8] dark:bg-[#d93025]/20 text-[#d93025] rounded-lg text-sm">
           {folderActionError}
         </div>
-      ) : null}
+      )}
 
-      <section className="mb-8 rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 overflow-hidden">
-        <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950/40">
-          <div className="flex items-center gap-2">
-            <KeyRound className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-            <p className="text-sm font-bold text-zinc-900 dark:text-zinc-100">Programmatic Upload App</p>
+      {/* Main Content */}
+      <div className="grid lg:grid-cols-[280px,1fr] gap-6">
+        {/* Sidebar */}
+        <Card className="h-fit">
+          <div className="p-4 border-b border-[#dadce0] dark:border-[#5f6368]">
+            <h3 className="font-medium text-[#202124] dark:text-[#e8eaed]">Folders</h3>
+            <p className="text-xs text-[#9aa0a6] mt-0.5">Drag files to move</p>
           </div>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-            Generate an app URI and bearer secret for server-to-server uploads.
-          </p>
-        </div>
-        <div className="p-4 space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-            <input
-              value={apiAppName}
-              onChange={(event) => setApiAppName(event.target.value)}
-              placeholder="App name (optional)"
-              className="px-3 py-2 text-sm rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
-            />
-            <input
-              value={apiAppFolder}
-              onChange={(event) => setApiAppFolder(event.target.value)}
-              placeholder={`Base folder (default: ${currentFolderLabel})`}
-              className="px-3 py-2 text-sm rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
-            />
-            <input
-              value={apiAppExtensions}
-              onChange={(event) => setApiAppExtensions(event.target.value)}
-              placeholder="Allowed extensions (png,jpg,pdf)"
-              className="px-3 py-2 text-sm rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
-            />
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                value={apiAppMaxMb}
-                onChange={(event) => setApiAppMaxMb(event.target.value)}
-                placeholder="Max MB"
-                className="px-3 py-2 text-sm rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
-              />
-              <input
-                value={apiAppTtlDays}
-                onChange={(event) => setApiAppTtlDays(event.target.value)}
-                placeholder="TTL days"
-                className="px-3 py-2 text-sm rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
-              />
-            </div>
-          </div>
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              Max per app: 15 MB. Folder scope limits where uploads can be written.
-            </p>
+
+          <div className="p-2 max-h-[400px] overflow-y-auto">
             <button
-              onClick={() => void handleCreateApiApp()}
-              disabled={apiAppLoading}
-              className="px-4 py-2 text-sm rounded-xl bg-zinc-900 text-white font-semibold hover:bg-zinc-800 transition-colors disabled:opacity-50"
+              onClick={() => openFolder('')}
+              onDragOver={(e) => handleFolderDragOver(e, '')}
+              onDrop={(e) => void handleFolderDrop(e, '')}
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+                currentFolder === '' ? 'bg-[#e8f0fe] dark:bg-[#1a73e8]/20 text-[#1a73e8] dark:text-[#8ab4f8]' : 'hover:bg-[#e8eaed] dark:hover:bg-[#3c4043]'
+              } ${dropFolderPath === '' && draggedAsset?.folder !== '' ? 'ring-2 ring-[#1a73e8]' : ''}`}
             >
-              {apiAppLoading ? 'Creating...' : 'Create App URI'}
+              <Folder className={`w-4 h-4 ${currentFolder === '' ? 'text-[#1a73e8]' : 'text-[#9aa0a6]'}`} />
+              <span className="flex-1 text-left">Root</span>
             </button>
-          </div>
-          {apiAppError ? (
-            <div className="rounded-xl border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/20 px-3 py-2 text-xs font-medium text-red-700 dark:text-red-300">
-              {apiAppError}
-            </div>
-          ) : null}
-          {createdApiApp ? (
-            <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/20 p-3 space-y-2">
-              <p className="text-xs font-semibold text-emerald-800 dark:text-emerald-300">
-                App created: {createdApiApp.app_name} ({createdApiApp.app_id})
-              </p>
-              <p className="text-xs text-emerald-700/90 dark:text-emerald-300/90">
-                Token expires: {new Date(createdApiApp.expires_at).toLocaleString()} • Max size: {formatSize(createdApiApp.max_bytes)}
-              </p>
-              <div className="flex items-center gap-2 p-2 bg-white/70 dark:bg-zinc-900/70 rounded-lg border border-emerald-200/70 dark:border-emerald-900/60">
-                <code className="text-[11px] text-zinc-700 dark:text-zinc-200 truncate flex-1 font-mono">{createdApiApp.ingest_url}</code>
-                <button
-                  onClick={() => copyToClipboard(createdApiApp.ingest_url, 'api-app-ingest-url')}
-                  className="p-1 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
-                  title="Copy ingest URL"
-                >
-                  {copying === 'api-app-ingest-url' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                </button>
-              </div>
-              <div className="flex items-center gap-2 p-2 bg-white/70 dark:bg-zinc-900/70 rounded-lg border border-emerald-200/70 dark:border-emerald-900/60">
-                <code className="text-[11px] text-zinc-700 dark:text-zinc-200 truncate flex-1 font-mono">{createdApiApp.app_secret}</code>
-                <button
-                  onClick={() => copyToClipboard(createdApiApp.app_secret, 'api-app-secret')}
-                  className="p-1 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
-                  title="Copy app secret"
-                >
-                  {copying === 'api-app-secret' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                </button>
-              </div>
-              <p className="text-[11px] text-emerald-700/80 dark:text-emerald-300/80">
-                Save this secret now. It grants upload access to the selected repo/branch.
-              </p>
-            </div>
-          ) : null}
-        </div>
-      </section>
-
-      <div className="grid grid-cols-1 lg:grid-cols-[280px,1fr] gap-6">
-        <aside className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-2xl overflow-hidden h-fit">
-          <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-700">
-            <p className="text-[11px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Folder Tree</p>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Drag files onto folders to move them.</p>
-          </div>
-
-          <div className="p-2 space-y-1 max-h-[52vh] overflow-y-auto">
-            <div
-              className={`flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer transition-colors ${
-                currentFolder === ''
-                  ? 'bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-200'
-                  : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
-              } ${dropFolderPath === '' && draggedAsset?.folder !== '' ? 'ring-2 ring-emerald-500/60' : ''}`}
-              onClick={() => void openFolder('')}
-              onDragOver={(event) => handleFolderDragOver(event, '')}
-              onDrop={(event) => void handleFolderDrop(event, '')}
-            >
-              <Folder className="w-4 h-4 text-emerald-500" />
-              <span className="text-sm font-medium">Root</span>
-            </div>
             {folderTree.length > 0 ? renderFolderTree(folderTree) : (
-              <p className="px-2 py-2 text-xs text-zinc-500 dark:text-zinc-400">No folders yet.</p>
+              <p className="px-3 py-2 text-sm text-[#9aa0a6]">No folders yet</p>
             )}
           </div>
 
-          <div className="px-3 py-3 border-t border-zinc-200 dark:border-zinc-700 space-y-2">
-            <div className="relative">
-              <FolderPlus className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 dark:text-zinc-500" />
-              <input
-                value={newFolderName}
-                onChange={(event) => setNewFolderName(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    void handleCreateFolder();
-                  }
-                }}
-                placeholder="New folder"
-                className="w-full pl-10 pr-3 py-2 text-sm rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
-              />
-            </div>
-            <button
-              onClick={() => void handleCreateFolder()}
-              disabled={folderActionLoading || !newFolderName.trim()}
-              className="w-full px-4 py-2 text-sm rounded-xl bg-zinc-900 text-white font-semibold hover:bg-zinc-800 transition-colors disabled:opacity-50"
+          <div className="p-4 border-t border-[#dadce0] dark:border-[#5f6368] space-y-3">
+            <Input
+              value={newFolderName}
+              onChange={setNewFolderName}
+              onKeyDown={(e) => e.key === 'Enter' && handleCreateFolder()}
+              placeholder="New folder name"
+              icon={<FolderPlus className="w-4 h-4" />}
+            />
+            <Button
+              onClick={handleCreateFolder}
+              loading={folderActionLoading}
+              disabled={!newFolderName.trim()}
+              variant="secondary"
+              className="w-full"
             >
-              {folderActionLoading ? 'Working...' : `Create in ${currentFolderLabel}`}
-            </button>
+              Create Folder
+            </Button>
           </div>
-        </aside>
+        </Card>
 
+        {/* Content Area */}
         <div>
-          <div className="mb-4 flex items-center flex-wrap gap-2 text-sm">
-            <button
-              onClick={() => void openFolder('')}
-              className="px-2 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
-            >
+          {/* Breadcrumb */}
+          <div className="flex items-center gap-2 mb-4 text-sm">
+            <button onClick={() => openFolder('')} className="px-2 py-1 rounded hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] text-[#1a73e8]">
               Root
             </button>
             {breadcrumbParts.map((part, index) => {
               const path = breadcrumbParts.slice(0, index + 1).join('/');
               return (
                 <React.Fragment key={path}>
-                  <ChevronRight className="w-3 h-3 text-zinc-400 dark:text-zinc-500" />
-                  <button
-                    onClick={() => void openFolder(path)}
-                    className="px-2 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
-                  >
+                  <ChevronRight className="w-4 h-4 text-[#9aa0a6]" />
+                  <button onClick={() => openFolder(path)} className="px-2 py-1 rounded hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] text-[#1a73e8]">
                     {part}
                   </button>
                 </React.Fragment>
@@ -998,59 +1469,50 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
             })}
           </div>
 
+          {/* Content */}
           {loading ? (
-            <div className="py-20 flex flex-col items-center justify-center gap-4">
-              <Loader2 className="w-10 h-10 text-emerald-500 animate-spin" />
-              <p className="text-zinc-500 dark:text-zinc-400">Fetching your assets...</p>
+            <div className="flex items-center justify-center py-20">
+              <Loader2 className="w-10 h-10 text-[#1a73e8] spinner" />
             </div>
-          ) : assets.length === 0 && folders.length === 0 ? (
-            <div className="py-20 border-2 border-dashed border-zinc-200 dark:border-zinc-700 rounded-3xl flex flex-col items-center justify-center text-center px-4">
-              <div className="w-16 h-16 bg-zinc-50 dark:bg-zinc-950 rounded-2xl flex items-center justify-center text-zinc-300 dark:text-zinc-600 mb-6">
-                <Upload className="w-8 h-8" />
-              </div>
-              <h3 className="text-xl font-bold text-zinc-900 dark:text-zinc-100 mb-2">No assets in {currentFolderLabel}</h3>
-              <p className="text-zinc-500 dark:text-zinc-400 max-w-sm mb-8">
-                Upload files or create a folder to start organizing your asset library.
-              </p>
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-                className="flex items-center gap-2 px-6 py-2.5 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border border-zinc-200 dark:border-zinc-700 rounded-xl font-semibold hover:bg-zinc-50 dark:hover:bg-zinc-800/70 transition-all disabled:opacity-50"
-              >
-                {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-                {uploading ? 'Uploading...' : 'Upload First Asset'}
-              </button>
-            </div>
+          ) : filteredAssets.length === 0 && folders.length === 0 ? (
+            <Card>
+              <EmptyState
+                icon={<Upload className="w-10 h-10" />}
+                title={searchQuery ? 'No matching assets' : 'No assets yet'}
+                description={searchQuery ? `No results for "${searchQuery}"` : 'Upload files or create folders to get started'}
+                action={!searchQuery && (
+                  <Button onClick={() => fileInputRef.current?.click()} icon={<Plus className="w-4 h-4" />}>
+                    Upload First Asset
+                  </Button>
+                )}
+              />
+            </Card>
           ) : (
-            <div className="space-y-6">
-              {folders.length > 0 ? (
+            <div className="space-y-4">
+              {/* Folders */}
+              {folders.length > 0 && (
                 <div>
-                  <p className="text-[11px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider mb-3">Folders</p>
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                    {folders.map((folder) => (
+                  <h3 className="text-xs font-medium text-[#9aa0a6] uppercase tracking-wider mb-3">Folders</h3>
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                    {folders.map(folder => (
                       <div
                         key={folder.path}
-                        className={`bg-white dark:bg-zinc-900 border rounded-xl px-4 py-3 flex items-center justify-between gap-3 ${
+                        onDragOver={(e) => handleFolderDragOver(e, folder.path)}
+                        onDrop={(e) => void handleFolderDrop(e, folder.path)}
+                        className={`flex items-center gap-3 p-3 bg-white dark:bg-[#202124] rounded-lg border transition-all cursor-pointer hover:shadow-sm ${
                           dropFolderPath === folder.path && draggedAsset?.folder !== folder.path
-                            ? 'border-emerald-500 ring-2 ring-emerald-500/40'
-                            : 'border-zinc-200 dark:border-zinc-700'
+                            ? 'border-[#1a73e8] ring-2 ring-[#1a73e8]/20'
+                            : 'border-[#dadce0] dark:border-[#5f6368] hover:border-[#9aa0a6]'
                         }`}
-                        onDragOver={(event) => handleFolderDragOver(event, folder.path)}
-                        onDrop={(event) => void handleFolderDrop(event, folder.path)}
                       >
-                        <button
-                          onClick={() => void openFolder(folder.path)}
-                          className="flex items-center gap-2 min-w-0 text-left"
-                          title={folder.path}
-                        >
-                          <Folder className="w-4 h-4 text-emerald-500 flex-shrink-0" />
-                          <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 truncate">{folder.name}</span>
+                        <button onClick={() => openFolder(folder.path)} className="flex items-center gap-3 flex-1 min-w-0">
+                          <Folder className="w-5 h-5 text-[#1a73e8] flex-shrink-0" />
+                          <span className="text-sm font-medium truncate">{folder.name}</span>
                         </button>
                         <button
-                          onClick={() => void handleDeleteFolder(folder.path)}
+                          onClick={() => handleDeleteFolder(folder.path)}
                           disabled={folderActionLoading}
-                          className="p-1.5 rounded-lg text-zinc-400 dark:text-zinc-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-50"
-                          title="Delete Folder"
+                          className="p-1.5 text-[#9aa0a6] hover:text-[#d93025] hover:bg-[#fce8e8] rounded transition-colors"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -1058,127 +1520,159 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
                     ))}
                   </div>
                 </div>
-              ) : null}
+              )}
 
-              {assets.length > 0 ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  <AnimatePresence>
-                    {assets.map((asset) => (
-                      <motion.div
-                        key={asset.sha}
-                        layout
-                        draggable
-                        onDragStart={(event) => {
-                          event.dataTransfer.effectAllowed = 'move';
-                          handleAssetDragStart(asset);
-                        }}
-                        onDragEnd={handleAssetDragEnd}
-                        initial={{ opacity: 0, scale: 0.95 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.95 }}
-                        className={`group bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-700 overflow-hidden hover:shadow-xl hover:shadow-zinc-200 dark:hover:shadow-zinc-950/50 transition-all ${
-                          draggedAsset?.path === asset.path ? 'opacity-60 cursor-grabbing' : 'cursor-grab'
-                        }`}
-                      >
-                        <div className="aspect-video bg-zinc-50 dark:bg-zinc-950 relative overflow-hidden flex items-center justify-center border-b border-zinc-100 dark:border-zinc-800">
-                          {isImageAsset(asset.name) && getPreviewUrl(asset) ? (
-                            <img
-                              src={getPreviewUrl(asset)!}
-                              alt={asset.name}
-                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                              referrerPolicy="no-referrer"
-                              loading="lazy"
-                              onError={() => handlePreviewError(asset)}
-                            />
-                          ) : (
-                            <FileText className="w-12 h-12 text-zinc-300 dark:text-zinc-600" />
-                          )}
-                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                            <button
-                              onClick={() => window.open(asset.cdn_url, '_blank')}
-                              className="p-2 bg-white dark:bg-zinc-900 rounded-lg text-zinc-900 dark:text-zinc-100 hover:bg-zinc-50 dark:hover:bg-zinc-800/70 transition-colors"
-                              title="Open in Browser"
-                            >
-                              <ExternalLink className="w-5 h-5" />
-                            </button>
-                            <button
-                              onClick={() => handleDelete(asset)}
-                              className="p-2 bg-white dark:bg-zinc-900 rounded-lg text-red-600 hover:bg-red-50 transition-colors"
-                              title="Delete Asset"
-                            >
-                              <Trash2 className="w-5 h-5" />
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="p-4">
-                          <div className="flex items-start justify-between gap-2 mb-4">
-                            <div className="min-w-0">
-                              <h4 className="font-bold text-zinc-900 dark:text-zinc-100 truncate text-sm" title={asset.name}>
-                                {asset.name}
-                              </h4>
-                              <p className="text-xs text-zinc-400 dark:text-zinc-500">{formatSize(asset.size)}</p>
-                              <p className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate mt-1" title={asset.path}>
-                                {asset.path}
-                              </p>
+              {/* Assets */}
+              {filteredAssets.length > 0 && (
+                <div>
+                  <h3 className="text-xs font-medium text-[#9aa0a6] uppercase tracking-wider mb-3">Files</h3>
+                  
+                  {viewMode === 'grid' ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                      {filteredAssets.map(asset => (
+                        <Card key={asset.sha} hover className="group overflow-hidden">
+                          {/* Preview */}
+                          <div className="aspect-video bg-[#f8f9fa] dark:bg-[#171717] relative overflow-hidden flex items-center justify-center">
+                            {isImageAsset(asset.name) && getPreviewUrl(asset) ? (
+                              <img
+                                src={getPreviewUrl(asset)!}
+                                alt={asset.name}
+                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                loading="lazy"
+                                onError={() => handlePreviewError(asset)}
+                              />
+                            ) : isVideoAsset(asset.name) ? (
+                              <Video className="w-10 h-10 text-[#9aa0a6]" />
+                            ) : (
+                              <FileText className="w-10 h-10 text-[#9aa0a6]" />
+                            )}
+                            
+                            {/* Overlay */}
+                            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                              <button
+                                onClick={() => window.open(asset.cdn_url, '_blank')}
+                                className="p-2 bg-white rounded-lg text-[#202124] hover:bg-[#f1f3f4] transition-colors"
+                                title="Open"
+                              >
+                                <ExternalLink className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => handleDelete(asset)}
+                                className="p-2 bg-white rounded-lg text-[#d93025] hover:bg-[#fce8e8] transition-colors"
+                                title="Delete"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
                             </div>
                           </div>
 
-                          <div className="space-y-3">
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Move To Folder</label>
-                              <div className="flex items-center gap-2">
-                                <select
-                                  value={moveTargets[asset.path] ?? currentFolder}
-                                  onChange={(event) =>
-                                    setMoveTargets((previous) => ({ ...previous, [asset.path]: event.target.value }))
-                                  }
-                                  className="flex-1 px-2 py-1.5 text-xs rounded-lg bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700"
-                                >
-                                  <option value="">Root</option>
-                                  {allFolders.map((folderPath) => (
-                                    <option key={folderPath} value={folderPath}>
-                                      {folderPath}
-                                    </option>
-                                  ))}
-                                </select>
-                                <button
-                                  onClick={() => void handleMoveAsset(asset)}
-                                  disabled={movingAssetPath === asset.path || (moveTargets[asset.path] ?? currentFolder) === asset.folder}
-                                  className="px-2 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-semibold hover:bg-zinc-800 disabled:opacity-50 transition-colors flex items-center gap-1"
-                                >
-                                  {movingAssetPath === asset.path ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowRightLeft className="w-3 h-3" />}
-                                  Move
-                                </button>
-                              </div>
+                          {/* Info */}
+                          <div className="p-3 space-y-3">
+                            <div>
+                              <p className="font-medium text-sm text-[#202124] dark:text-[#e8eaed] truncate" title={asset.name}>{asset.name}</p>
+                              <p className="text-xs text-[#9aa0a6]">{formatSize(asset.size)}</p>
                             </div>
 
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Public CDN URL</label>
-                              <div className="flex items-center gap-2 p-2 bg-zinc-50 dark:bg-zinc-950 rounded-lg border border-zinc-100 dark:border-zinc-800">
-                                <code className="text-[10px] text-zinc-600 dark:text-zinc-300 truncate flex-1 font-mono">{asset.cdn_url}</code>
-                                <button
-                                  onClick={() => copyToClipboard(asset.cdn_url, asset.sha)}
-                                  className="p-1 text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
-                                >
-                                  {copying === asset.sha ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                                </button>
-                              </div>
+                            {/* Move dropdown */}
+                            <div className="flex items-center gap-2">
+                              <select
+                                value={moveTargets[asset.path] ?? currentFolder}
+                                onChange={(e) => setMoveTargets(prev => ({ ...prev, [asset.path]: e.target.value }))}
+                                className="flex-1 text-xs bg-[#f8f9fa] dark:bg-[#3c4043] border border-[#dadce0] dark:border-[#5f6368] rounded px-2 py-1"
+                              >
+                                <option value="">Root</option>
+                                {allFolders.map(f => <option key={f} value={f}>{f}</option>)}
+                              </select>
+                              <button
+                                onClick={() => moveAssetToFolder(asset.path, asset.folder, moveTargets[asset.path] ?? currentFolder)}
+                                disabled={movingAssetPath === asset.path}
+                                className="p-1.5 bg-[#1a73e8] text-white rounded hover:bg-[#1557b0] disabled:opacity-50 transition-colors"
+                              >
+                                {movingAssetPath === asset.path ? <Loader2 className="w-3 h-3 spinner" /> : <ArrowRightLeft className="w-3 h-3" />}
+                              </button>
+                            </div>
+
+                            {/* URL */}
+                            <div className="flex items-center gap-2 p-2 bg-[#f8f9fa] dark:bg-[#171717] rounded-lg">
+                              <code className="text-xs font-mono truncate flex-1 text-[#5f6368]">{asset.cdn_url}</code>
+                              <button
+                                onClick={() => copyToClipboard(asset.cdn_url, asset.sha)}
+                                className="p-1 hover:bg-white dark:hover:bg-[#202124] rounded transition-colors"
+                              >
+                                {copying === asset.sha ? <Check className="w-3.5 h-3.5 text-[#188038]" /> : <Copy className="w-3.5 h-3.5" />}
+                              </button>
                             </div>
                           </div>
-                        </div>
-                      </motion.div>
-                    ))}
-                  </AnimatePresence>
+                        </Card>
+                      ))}
+                    </div>
+                  ) : (
+                    // List view
+                    <Card className="overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead className="bg-[#f8f9fa] dark:bg-[#3c4043]">
+                          <tr>
+                            <th className="text-left px-4 py-3 font-medium text-[#5f6368] dark:text-[#9aa0a6]">Name</th>
+                            <th className="text-left px-4 py-3 font-medium text-[#5f6368] dark:text-[#9aa0a6]">Size</th>
+                            <th className="text-left px-4 py-3 font-medium text-[#5f6368] dark:text-[#9aa0a6]">URL</th>
+                            <th className="text-right px-4 py-3 font-medium text-[#5f6368] dark:text-[#9aa0a6]">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#e8eaed] dark:divide-[#3c4043]">
+                          {filteredAssets.map(asset => (
+                            <tr key={asset.sha} className="hover:bg-[#f8f9fa]/50 dark:hover:bg-[#3c4043]/50">
+                              <td className="px-4 py-3">
+                                <div className="flex items-center gap-3">
+                                  {isImageAsset(asset.name) ? <ImageIcon className="w-4 h-4 text-[#1a73e8]" /> : <File className="w-4 h-4 text-[#9aa0a6]" />}
+                                  <span className="font-medium truncate max-w-[200px]" title={asset.name}>{asset.name}</span>
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 text-[#5f6368]">{formatSize(asset.size)}</td>
+                              <td className="px-4 py-3">
+                                <code className="text-xs font-mono text-[#5f6368] truncate max-w-[300px] block">{asset.cdn_url}</code>
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex items-center justify-end gap-2">
+                                  <button
+                                    onClick={() => copyToClipboard(asset.cdn_url, asset.sha)}
+                                    className="p-1.5 hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] rounded transition-colors"
+                                    title="Copy URL"
+                                  >
+                                    {copying === asset.sha ? <Check className="w-4 h-4 text-[#188038]" /> : <Copy className="w-4 h-4" />}
+                                  </button>
+                                  <button
+                                    onClick={() => window.open(asset.cdn_url, '_blank')}
+                                    className="p-1.5 hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] rounded transition-colors"
+                                    title="Open"
+                                  >
+                                    <ExternalLink className="w-4 h-4" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDelete(asset)}
+                                    className="p-1.5 hover:bg-[#fce8e8] text-[#d93025] rounded transition-colors"
+                                    title="Delete"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </Card>
+                  )}
                 </div>
-              ) : null}
+              )}
             </div>
           )}
         </div>
       </div>
     </div>
   );
-};
+});
+
+// --- Main App Component ---
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -1186,8 +1680,11 @@ export default function App() {
   const [reposLoading, setReposLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'landing' | 'repos' | 'dashboard'>('landing');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activeView, setActiveView] = useState('dashboard');
+  const [toast, setToast] = useState<{message: string; type: 'success' | 'error'} | null>(null);
 
-  const fetchUser = async () => {
+  const fetchUser = useCallback(async () => {
     try {
       const res = await fetch('/api/me');
       if (res.ok) {
@@ -1197,7 +1694,7 @@ export default function App() {
           setView('dashboard');
         } else {
           setView('repos');
-          void fetchRepos();
+          fetchRepos();
         }
       } else {
         setUser(null);
@@ -1209,9 +1706,9 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const fetchRepos = async () => {
+  const fetchRepos = useCallback(async () => {
     setReposLoading(true);
     try {
       const res = await fetch('/api/repos');
@@ -1227,101 +1724,120 @@ export default function App() {
     } finally {
       setReposLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchUser();
   }, []);
 
   useEffect(() => {
+    fetchUser();
+  }, [fetchUser]);
+
+  useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin) {
-        return;
-      }
+      if (event.origin !== window.location.origin) return;
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
-        void fetchUser();
+        fetchUser();
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, []);
+  }, [fetchUser]);
 
-  const handleConnect = async () => {
+  const handleConnect = useCallback(async () => {
     try {
       const res = await fetch('/api/auth/url');
-      if (!res.ok) {
-        return;
-      }
+      if (!res.ok) return;
       const { url } = await res.json();
       window.open(url, 'github_oauth', 'width=600,height=700');
     } catch (err) {
       console.error(err);
     }
-  };
+  }, []);
 
-  const handleSelectRepo = async (repo: Repo) => {
+  const handleSelectRepo = useCallback(async (repo: Repo) => {
     try {
       await fetch('/api/select-repo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ repo: repo.full_name, branch: repo.default_branch })
       });
-      void fetchUser();
+      fetchUser();
     } catch (err) {
       console.error(err);
     }
-  };
+  }, [fetchUser]);
 
-  const handleLogout = async () => {
+  const handleLogout = useCallback(async () => {
     await fetch('/api/logout', { method: 'POST' });
     setUser(null);
     setView('landing');
-  };
+  }, []);
+
+  const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+  }, []);
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 flex items-center justify-center">
-        <Loader2 className="w-10 h-10 text-emerald-500 animate-spin" />
+      <div className="min-h-screen bg-[#f8f9fa] dark:bg-[#171717] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-[#1a73e8] border-t-transparent rounded-full spinner" />
+          <p className="text-[#5f6368]">Loading...</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 font-sans selection:bg-emerald-100 dark:selection:bg-emerald-900/40 selection:text-emerald-900 dark:selection:text-emerald-200 flex flex-col">
-      <Navbar user={user} onLogout={handleLogout} />
+    <div className="min-h-screen bg-[#f8f9fa] dark:bg-[#171717] flex flex-col">
+      <Header 
+        user={user} 
+        onLogout={handleLogout} 
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+      />
       
-      <main className="flex-1">
-        {view === 'landing' && <LandingPage onConnect={handleConnect} />}
-        {view === 'repos' && <RepoSelector repos={repos} onSelect={handleSelectRepo} loading={reposLoading} />}
+      <div className="flex flex-1">
         {view === 'dashboard' && user && (
-          <Dashboard 
-            user={user} 
-            onChangeRepo={() => {
-              setView('repos');
-              void fetchRepos();
-            }} 
+          <Sidebar 
+            activeView={activeView}
+            onViewChange={setActiveView}
+            isOpen={sidebarOpen}
+            onClose={() => setSidebarOpen(false)}
+            repo={user.selected_repo}
           />
         )}
-      </main>
+        
+        <main className="flex-1 min-w-0">
+          {view === 'landing' && <LandingPage onConnect={handleConnect} />}
+          
+          {view === 'repos' && (
+            <RepoSelector 
+              repos={repos} 
+              onSelect={handleSelectRepo} 
+              loading={reposLoading} 
+            />
+          )}
+          
+          {view === 'dashboard' && user && (
+            <Dashboard 
+              user={user}
+              activeView={activeView}
+              onChangeRepo={() => {
+                setView('repos');
+                fetchRepos();
+              }}
+              onToast={showToast}
+            />
+          )}
+        </main>
+      </div>
 
-      <footer className="border-t border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 py-12 mt-auto">
-        <div className="max-w-7xl mx-auto px-4 text-center">
-          <div className="flex items-center justify-center gap-2 mb-4">
-            <Github className="w-5 h-5 text-zinc-400 dark:text-zinc-500" />
-            <span className="font-bold text-zinc-900 dark:text-zinc-100">GitCDN</span>
-          </div>
-          <p className="text-zinc-500 dark:text-zinc-400 text-sm">
-            Built for developers who love GitHub. 
-            <br />
-            No tracking. No ads. Just your assets.
-          </p>
-          <div className="mt-8 flex justify-center gap-6">
-            <a href="#" className="text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors">Privacy</a>
-            <a href="#" className="text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors">Terms</a>
-            <a href="#" className="text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors">GitHub</a>
-          </div>
-        </div>
-      </footer>
+      {toast && (
+        <Toast 
+          message={toast.message} 
+          type={toast.type}
+          onClose={() => setToast(null)}
+        />
+      )}
     </div>
   );
 }
