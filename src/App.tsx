@@ -31,7 +31,9 @@ import {
   List,
   Image as ImageIcon,
   File,
-  Video
+  Video,
+  MoreVertical,
+  FolderOpen
 } from 'lucide-react';
 
 // --- Types ---
@@ -87,54 +89,12 @@ interface ApiAppCredential {
   expires_at: number;
 }
 
-interface FolderTreeNode {
-  path: string;
-  name: string;
-  children: FolderTreeNode[];
-}
-
 // --- Utilities ---
 
 const getParentFolderPath = (path: string): string => {
   const lastSlash = path.lastIndexOf('/');
   if (lastSlash < 0) return '';
   return path.slice(0, lastSlash);
-};
-
-const getFolderDisplayName = (path: string): string => {
-  const parentPath = getParentFolderPath(path);
-  if (!parentPath) return path;
-  return path.slice(parentPath.length + 1);
-};
-
-const buildFolderTree = (paths: string[]): FolderTreeNode[] => {
-  const sortedPaths = [...new Set(paths)].sort((a, b) => a.localeCompare(b));
-  const nodeMap = new Map<string, FolderTreeNode>();
-
-  for (const path of sortedPaths) {
-    nodeMap.set(path, { path, name: getFolderDisplayName(path), children: [] });
-  }
-
-  const roots: FolderTreeNode[] = [];
-  for (const path of sortedPaths) {
-    const node = nodeMap.get(path);
-    if (!node) continue;
-
-    const parentPath = getParentFolderPath(path);
-    if (parentPath && nodeMap.has(parentPath)) {
-      nodeMap.get(parentPath)!.children.push(node);
-    } else {
-      roots.push(node);
-    }
-  }
-
-  const sortTree = (nodes: FolderTreeNode[]) => {
-    nodes.sort((a, b) => a.name.localeCompare(b.name));
-    for (const node of nodes) sortTree(node.children);
-  };
-
-  sortTree(roots);
-  return roots;
 };
 
 const formatSize = (bytes: number): string => {
@@ -730,15 +690,6 @@ const RepoSelector = memo<{
           )}
         </div>
       </Card>
-
-      <div className="mt-6 text-center">
-        <p className="text-sm text-[#5f6368]">
-          Don't see your repository?{' '}
-          <button className="text-[#1a73e8] hover:underline font-medium">
-            Refresh list
-          </button>
-        </p>
-      </div>
     </div>
   );
 });
@@ -763,14 +714,12 @@ const Dashboard = memo<{
   const [folderActionError, setFolderActionError] = useState<string | null>(null);
   const [folderActionLoading, setFolderActionLoading] = useState(false);
   const [movingAssetPath, setMovingAssetPath] = useState<string | null>(null);
-  const [moveTargets, setMoveTargets] = useState<Record<string, string>>({});
-  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
-  const [draggedAsset, setDraggedAsset] = useState<{ path: string; folder: string } | null>(null);
-  const [dropFolderPath, setDropFolderPath] = useState<string | null>(null);
+  const [expandedAssets, setExpandedAssets] = useState<Record<string, boolean>>({});
   const [imagePreviewAttempts, setImagePreviewAttempts] = useState<Record<string, number>>({});
   const [copying, setCopying] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchQuery, setSearchQuery] = useState('');
+  const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // API App state
@@ -804,6 +753,7 @@ const Dashboard = memo<{
       setAllFolders(data.all_folders ?? []);
       setCurrentFolder(data.current_folder ?? targetFolder);
       setImagePreviewAttempts({});
+      setExpandedAssets({});
     } catch (err) {
       console.error(err);
       setAssets([]);
@@ -829,17 +779,8 @@ const Dashboard = memo<{
   const openFolder = useCallback(async (path: string) => {
     setLoading(true);
     setFolderActionError(null);
-    if (path) {
-      setExpandedFolders(prev => {
-        const next = { ...prev };
-        let cursor = path;
-        while (cursor) {
-          next[cursor] = true;
-          cursor = getParentFolderPath(cursor);
-        }
-        return next;
-      });
-    }
+    setShowNewFolderInput(false);
+    setNewFolderName('');
     await fetchAssets(path);
   }, [fetchAssets]);
 
@@ -927,6 +868,7 @@ const Dashboard = memo<{
       }
 
       setNewFolderName('');
+      setShowNewFolderInput(false);
       onToast('Folder created successfully');
       await fetchAssets(currentFolder);
     } catch (err) {
@@ -1025,9 +967,7 @@ const Dashboard = memo<{
     }
   }, [apiAppName, apiAppFolder, apiAppExtensions, apiAppMaxMb, apiAppTtlDays, currentFolder, onToast]);
 
-  const moveAssetToFolder = useCallback(async (assetPath: string, sourceFolder: string, destinationFolder: string) => {
-    if (destinationFolder === sourceFolder) return false;
-
+  const moveAssetToFolder = useCallback(async (assetPath: string, destinationFolder: string) => {
     setMovingAssetPath(assetPath);
     setFolderActionError(null);
     try {
@@ -1062,6 +1002,10 @@ const Dashboard = memo<{
     setTimeout(() => setCopying(null), 2000);
   }, [onToast]);
 
+  const toggleAssetExpanded = useCallback((assetSha: string) => {
+    setExpandedAssets(prev => ({ ...prev, [assetSha]: !prev[assetSha] }));
+  }, []);
+
   const isImageAsset = (name: string) => /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i.test(name);
   const isVideoAsset = (name: string) => /\.(mp4|webm|mov|avi|mkv)$/i.test(name);
 
@@ -1079,82 +1023,7 @@ const Dashboard = memo<{
     }));
   }, []);
 
-  const folderTree = useMemo(() => buildFolderTree(allFolders), [allFolders]);
   const breadcrumbParts = currentFolder ? currentFolder.split('/') : [];
-  const currentFolderLabel = currentFolder || 'Root';
-
-  // Drag and drop handlers
-  const handleAssetDragStart = useCallback((asset: Asset) => {
-    setDraggedAsset({ path: asset.path, folder: asset.folder });
-    setDropFolderPath(null);
-    setFolderActionError(null);
-  }, []);
-
-  const handleAssetDragEnd = useCallback(() => {
-    setDraggedAsset(null);
-    setDropFolderPath(null);
-  }, []);
-
-  const handleFolderDragOver = useCallback((e: React.DragEvent, targetPath: string) => {
-    if (!draggedAsset || draggedAsset.folder === targetPath) return;
-    e.preventDefault();
-    if (dropFolderPath !== targetPath) setDropFolderPath(targetPath);
-  }, [draggedAsset, dropFolderPath]);
-
-  const handleFolderDrop = useCallback(async (e: React.DragEvent, targetPath: string) => {
-    e.preventDefault();
-    if (!draggedAsset) return;
-    setDropFolderPath(null);
-    const source = draggedAsset;
-    setDraggedAsset(null);
-    await moveAssetToFolder(source.path, source.folder, targetPath);
-  }, [draggedAsset, moveAssetToFolder]);
-
-  // Render folder tree recursively
-  const renderFolderTree = useCallback((nodes: FolderTreeNode[], depth = 0): React.ReactNode => {
-    return nodes.map(node => {
-      const hasChildren = node.children.length > 0;
-      const isExpanded = expandedFolders[node.path] ?? true;
-      const isActive = node.path === currentFolder;
-      const isDropTarget = dropFolderPath === node.path && draggedAsset?.folder !== node.path;
-
-      return (
-        <React.Fragment key={node.path}>
-          <div
-            className={`flex items-center gap-1 rounded-lg px-2 py-1.5 transition-colors cursor-pointer ${
-              isActive ? 'bg-[#e8f0fe] dark:bg-[#1a73e8]/20 text-[#1a73e8] dark:text-[#8ab4f8]' : 'hover:bg-[#e8eaed] dark:hover:bg-[#3c4043]'
-            } ${isDropTarget ? 'ring-2 ring-[#1a73e8]' : ''}`}
-            style={{ paddingLeft: `${depth * 12 + 8}px` }}
-            onDragOver={(e) => handleFolderDragOver(e, node.path)}
-            onDrop={(e) => void handleFolderDrop(e, node.path)}
-            onClick={() => hasChildren 
-              ? setExpandedFolders(prev => ({ ...prev, [node.path]: !(prev[node.path] ?? true) }))
-              : void openFolder(node.path)
-            }
-          >
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                hasChildren 
-                  ? setExpandedFolders(prev => ({ ...prev, [node.path]: !(prev[node.path] ?? true) }))
-                  : void openFolder(node.path);
-              }}
-              className="p-0.5 text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed]"
-            >
-              {hasChildren ? (
-                <ChevronRight className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
-              ) : (
-                <span className="w-4 h-4 inline-block" />
-              )}
-            </button>
-            <Folder className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-[#1a73e8]' : 'text-[#9aa0a6]'}`} />
-            <span className="truncate text-sm flex-1">{node.name}</span>
-          </div>
-          {hasChildren && isExpanded ? renderFolderTree(node.children, depth + 1) : null}
-        </React.Fragment>
-      );
-    });
-  }, [currentFolder, expandedFolders, dropFolderPath, draggedAsset, handleFolderDragOver, handleFolderDrop, openFolder]);
 
   // Views
   if (activeView === 'api') {
@@ -1182,61 +1051,35 @@ const Dashboard = memo<{
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-[#202124] dark:text-[#e8eaed] mb-1.5">App Name</label>
-                <Input
-                  value={apiAppName}
-                  onChange={setApiAppName}
-                  placeholder="My Upload App"
-                />
+                <Input value={apiAppName} onChange={setApiAppName} placeholder="My Upload App" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-[#202124] dark:text-[#e8eaed] mb-1.5">Base Folder</label>
-                <Input
-                  value={apiAppFolder}
-                  onChange={setApiAppFolder}
-                  placeholder={`Default: ${currentFolderLabel}`}
-                />
+                <Input value={apiAppFolder} onChange={setApiAppFolder} placeholder={`Default: ${currentFolder || 'Root'}`} />
               </div>
               <div>
                 <label className="block text-sm font-medium text-[#202124] dark:text-[#e8eaed] mb-1.5">Allowed Extensions</label>
-                <Input
-                  value={apiAppExtensions}
-                  onChange={setApiAppExtensions}
-                  placeholder="png,jpg,pdf (comma-separated)"
-                />
+                <Input value={apiAppExtensions} onChange={setApiAppExtensions} placeholder="png,jpg,pdf (comma-separated)" />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm font-medium text-[#202124] dark:text-[#e8eaed] mb-1.5">Max Size (MB)</label>
-                  <Input
-                    value={apiAppMaxMb}
-                    onChange={setApiAppMaxMb}
-                    type="number"
-                  />
+                  <Input value={apiAppMaxMb} onChange={setApiAppMaxMb} type="number" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-[#202124] dark:text-[#e8eaed] mb-1.5">Expires (Days)</label>
-                  <Input
-                    value={apiAppTtlDays}
-                    onChange={setApiAppTtlDays}
-                    type="number"
-                  />
+                  <Input value={apiAppTtlDays} onChange={setApiAppTtlDays} type="number" />
                 </div>
               </div>
             </div>
 
             {apiAppError && (
-              <div className="p-3 bg-[#fce8e8] dark:bg-[#d93025]/20 text-[#d93025] text-sm rounded-lg">
-                {apiAppError}
-              </div>
+              <div className="p-3 bg-[#fce8e8] dark:bg-[#d93025]/20 text-[#d93025] text-sm rounded-lg">{apiAppError}</div>
             )}
 
             <div className="flex items-center justify-between pt-2">
               <p className="text-xs text-[#9aa0a6]">Max file size: 15 MB per upload</p>
-              <Button
-                onClick={handleCreateApiApp}
-                loading={apiAppLoading}
-                icon={<KeyRound className="w-4 h-4" />}
-              >
+              <Button onClick={handleCreateApiApp} loading={apiAppLoading} icon={<KeyRound className="w-4 h-4" />}>
                 Create Credential
               </Button>
             </div>
@@ -1247,29 +1090,21 @@ const Dashboard = memo<{
                   <Check className="w-5 h-5" />
                   <span className="font-medium">Credential created successfully</span>
                 </div>
-                
                 <div className="space-y-2">
                   <div>
                     <label className="text-xs font-medium text-[#5f6368] dark:text-[#9aa0a6] uppercase">Ingest URL</label>
                     <div className="flex items-center gap-2 mt-1 p-2 bg-white dark:bg-[#202124] rounded-lg border border-[#dadce0] dark:border-[#5f6368]">
                       <code className="text-xs font-mono truncate flex-1">{createdApiApp.ingest_url}</code>
-                      <button
-                        onClick={() => copyToClipboard(createdApiApp.ingest_url, 'api-url')}
-                        className="p-1.5 hover:bg-[#f1f3f4] dark:hover:bg-[#3c4043] rounded transition-colors"
-                      >
+                      <button onClick={() => copyToClipboard(createdApiApp.ingest_url, 'api-url')} className="p-1.5 hover:bg-[#f1f3f4] dark:hover:bg-[#3c4043] rounded">
                         {copying === 'api-url' ? <Check className="w-4 h-4 text-[#188038]" /> : <Copy className="w-4 h-4" />}
                       </button>
                     </div>
                   </div>
-                  
                   <div>
                     <label className="text-xs font-medium text-[#5f6368] dark:text-[#9aa0a6] uppercase">Secret Token</label>
                     <div className="flex items-center gap-2 mt-1 p-2 bg-white dark:bg-[#202124] rounded-lg border border-[#dadce0] dark:border-[#5f6368]">
                       <code className="text-xs font-mono truncate flex-1">{createdApiApp.app_secret}</code>
-                      <button
-                        onClick={() => copyToClipboard(createdApiApp.app_secret, 'api-secret')}
-                        className="p-1.5 hover:bg-[#f1f3f4] dark:hover:bg-[#3c4043] rounded transition-colors"
-                      >
+                      <button onClick={() => copyToClipboard(createdApiApp.app_secret, 'api-secret')} className="p-1.5 hover:bg-[#f1f3f4] dark:hover:bg-[#3c4043] rounded">
                         {copying === 'api-secret' ? <Check className="w-4 h-4 text-[#188038]" /> : <Copy className="w-4 h-4" />}
                       </button>
                     </div>
@@ -1307,9 +1142,7 @@ const Dashboard = memo<{
                   <p className="text-sm text-[#5f6368] dark:text-[#9aa0a6]">{user.selected_branch || 'main'} branch</p>
                 </div>
               </div>
-              <Button variant="secondary" onClick={onChangeRepo}>
-                Change
-              </Button>
+              <Button variant="secondary" onClick={onChangeRepo}>Change</Button>
             </div>
           </div>
         </Card>
@@ -1337,9 +1170,9 @@ const Dashboard = memo<{
     );
   }
 
-  // Default Dashboard (Assets view)
+  // Default Dashboard (Assets view) - Clean single-column layout
   return (
-    <div className="p-4 lg:p-8">
+    <div className="p-4 lg:p-8 max-w-6xl mx-auto">
       {/* Header */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6">
         <div>
@@ -1381,6 +1214,44 @@ const Dashboard = memo<{
         </div>
       </div>
 
+      {/* Breadcrumb */}
+      <div className="flex items-center gap-2 mb-4 text-sm">
+        <button onClick={() => openFolder('')} className="px-2 py-1 rounded hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] text-[#1a73e8]">
+          Root
+        </button>
+        {breadcrumbParts.map((part, index) => {
+          const path = breadcrumbParts.slice(0, index + 1).join('/');
+          return (
+            <React.Fragment key={path}>
+              <ChevronRight className="w-4 h-4 text-[#9aa0a6]" />
+              <button onClick={() => openFolder(path)} className="px-2 py-1 rounded hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] text-[#1a73e8]">
+                {part}
+              </button>
+            </React.Fragment>
+          );
+        })}
+      </div>
+
+      {/* New Folder Input - Inline */}
+      {showNewFolderInput && (
+        <div className="mb-4 p-4 bg-[#e8f0fe] dark:bg-[#1a73e8]/10 border border-[#1a73e8]/20 rounded-lg flex items-center gap-3">
+          <FolderPlus className="w-5 h-5 text-[#1a73e8]" />
+          <Input
+            value={newFolderName}
+            onChange={setNewFolderName}
+            onKeyDown={(e) => e.key === 'Enter' && handleCreateFolder()}
+            placeholder="Folder name"
+            className="flex-1 max-w-xs"
+          />
+          <Button onClick={handleCreateFolder} loading={folderActionLoading} disabled={!newFolderName.trim()} size="sm">
+            Create
+          </Button>
+          <Button variant="ghost" onClick={() => { setShowNewFolderInput(false); setNewFolderName(''); }} size="sm">
+            Cancel
+          </Button>
+        </div>
+      )}
+
       {/* Alerts */}
       {uploading && (
         <div className="mb-4 p-4 bg-[#e8f0fe] dark:bg-[#1a73e8]/20 border border-[#1a73e8]/20 rounded-lg flex items-center gap-3">
@@ -1392,235 +1263,213 @@ const Dashboard = memo<{
       )}
 
       {uploadError && (
-        <div className="mb-4 p-4 bg-[#fce8e8] dark:bg-[#d93025]/20 text-[#d93025] rounded-lg text-sm">
-          {uploadError}
-        </div>
+        <div className="mb-4 p-4 bg-[#fce8e8] dark:bg-[#d93025]/20 text-[#d93025] rounded-lg text-sm">{uploadError}</div>
       )}
 
       {folderActionError && (
-        <div className="mb-4 p-4 bg-[#fce8e8] dark:bg-[#d93025]/20 text-[#d93025] rounded-lg text-sm">
-          {folderActionError}
-        </div>
+        <div className="mb-4 p-4 bg-[#fce8e8] dark:bg-[#d93025]/20 text-[#d93025] rounded-lg text-sm">{folderActionError}</div>
       )}
 
-      {/* Main Content */}
-      <div className="grid lg:grid-cols-[280px,1fr] gap-6">
-        {/* Sidebar */}
-        <Card className="h-fit">
-          <div className="p-4 border-b border-[#dadce0] dark:border-[#5f6368]">
-            <h3 className="font-medium text-[#202124] dark:text-[#e8eaed]">Folders</h3>
-            <p className="text-xs text-[#9aa0a6] mt-0.5">Drag files to move</p>
-          </div>
-
-          <div className="p-2 max-h-[400px] overflow-y-auto">
-            <button
-              onClick={() => openFolder('')}
-              onDragOver={(e) => handleFolderDragOver(e, '')}
-              onDrop={(e) => void handleFolderDrop(e, '')}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
-                currentFolder === '' ? 'bg-[#e8f0fe] dark:bg-[#1a73e8]/20 text-[#1a73e8] dark:text-[#8ab4f8]' : 'hover:bg-[#e8eaed] dark:hover:bg-[#3c4043]'
-              } ${dropFolderPath === '' && draggedAsset?.folder !== '' ? 'ring-2 ring-[#1a73e8]' : ''}`}
-            >
-              <Folder className={`w-4 h-4 ${currentFolder === '' ? 'text-[#1a73e8]' : 'text-[#9aa0a6]'}`} />
-              <span className="flex-1 text-left">Root</span>
-            </button>
-            {folderTree.length > 0 ? renderFolderTree(folderTree) : (
-              <p className="px-3 py-2 text-sm text-[#9aa0a6]">No folders yet</p>
+      {/* Content */}
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="w-10 h-10 text-[#1a73e8] spinner" />
+        </div>
+      ) : filteredAssets.length === 0 && folders.length === 0 ? (
+        <Card>
+          <EmptyState
+            icon={<Upload className="w-10 h-10" />}
+            title={searchQuery ? 'No matching assets' : 'No assets yet'}
+            description={searchQuery ? `No results for "${searchQuery}"` : 'Upload files or create folders to get started'}
+            action={!searchQuery && (
+              <div className="flex gap-3">
+                <Button onClick={() => fileInputRef.current?.click()} icon={<Plus className="w-4 h-4" />}>
+                  Upload First Asset
+                </Button>
+                <Button variant="secondary" onClick={() => setShowNewFolderInput(true)} icon={<FolderPlus className="w-4 h-4" />}>
+                  New Folder
+                </Button>
+              </div>
             )}
-          </div>
-
-          <div className="p-4 border-t border-[#dadce0] dark:border-[#5f6368] space-y-3">
-            <Input
-              value={newFolderName}
-              onChange={setNewFolderName}
-              onKeyDown={(e) => e.key === 'Enter' && handleCreateFolder()}
-              placeholder="New folder name"
-              icon={<FolderPlus className="w-4 h-4" />}
-            />
-            <Button
-              onClick={handleCreateFolder}
-              loading={folderActionLoading}
-              disabled={!newFolderName.trim()}
-              variant="secondary"
-              className="w-full"
-            >
-              Create Folder
-            </Button>
-          </div>
+          />
         </Card>
-
-        {/* Content Area */}
-        <div>
-          {/* Breadcrumb */}
-          <div className="flex items-center gap-2 mb-4 text-sm">
-            <button onClick={() => openFolder('')} className="px-2 py-1 rounded hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] text-[#1a73e8]">
-              Root
-            </button>
-            {breadcrumbParts.map((part, index) => {
-              const path = breadcrumbParts.slice(0, index + 1).join('/');
-              return (
-                <React.Fragment key={path}>
-                  <ChevronRight className="w-4 h-4 text-[#9aa0a6]" />
-                  <button onClick={() => openFolder(path)} className="px-2 py-1 rounded hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] text-[#1a73e8]">
-                    {part}
+      ) : (
+        <div className="space-y-4">
+          {/* Folders */}
+          {folders.length > 0 && (
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-medium text-[#9aa0a6] uppercase tracking-wider">Folders</h3>
+                {!showNewFolderInput && (
+                  <button 
+                    onClick={() => setShowNewFolderInput(true)}
+                    className="text-xs text-[#1a73e8] hover:underline flex items-center gap-1"
+                  >
+                    <Plus className="w-3 h-3" />
+                    New Folder
                   </button>
-                </React.Fragment>
-              );
-            })}
-          </div>
-
-          {/* Content */}
-          {loading ? (
-            <div className="flex items-center justify-center py-20">
-              <Loader2 className="w-10 h-10 text-[#1a73e8] spinner" />
-            </div>
-          ) : filteredAssets.length === 0 && folders.length === 0 ? (
-            <Card>
-              <EmptyState
-                icon={<Upload className="w-10 h-10" />}
-                title={searchQuery ? 'No matching assets' : 'No assets yet'}
-                description={searchQuery ? `No results for "${searchQuery}"` : 'Upload files or create folders to get started'}
-                action={!searchQuery && (
-                  <Button onClick={() => fileInputRef.current?.click()} icon={<Plus className="w-4 h-4" />}>
-                    Upload First Asset
-                  </Button>
                 )}
-              />
-            </Card>
-          ) : (
-            <div className="space-y-4">
-              {/* Folders */}
-              {folders.length > 0 && (
-                <div>
-                  <h3 className="text-xs font-medium text-[#9aa0a6] uppercase tracking-wider mb-3">Folders</h3>
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                    {folders.map(folder => (
-                      <div
-                        key={folder.path}
-                        onDragOver={(e) => handleFolderDragOver(e, folder.path)}
-                        onDrop={(e) => void handleFolderDrop(e, folder.path)}
-                        className={`flex items-center gap-3 p-3 bg-white dark:bg-[#202124] rounded-lg border transition-all cursor-pointer hover:shadow-sm ${
-                          dropFolderPath === folder.path && draggedAsset?.folder !== folder.path
-                            ? 'border-[#1a73e8] ring-2 ring-[#1a73e8]/20'
-                            : 'border-[#dadce0] dark:border-[#5f6368] hover:border-[#9aa0a6]'
-                        }`}
-                      >
-                        <button onClick={() => openFolder(folder.path)} className="flex items-center gap-3 flex-1 min-w-0">
-                          <Folder className="w-5 h-5 text-[#1a73e8] flex-shrink-0" />
-                          <span className="text-sm font-medium truncate">{folder.name}</span>
-                        </button>
-                        <button
-                          onClick={() => handleDeleteFolder(folder.path)}
-                          disabled={folderActionLoading}
-                          className="p-1.5 text-[#9aa0a6] hover:text-[#d93025] hover:bg-[#fce8e8] rounded transition-colors"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                {folders.map(folder => (
+                  <div
+                    key={folder.path}
+                    className="flex items-center gap-3 p-3 bg-white dark:bg-[#202124] rounded-lg border border-[#dadce0] dark:border-[#5f6368] hover:border-[#9aa0a6] dark:hover:border-[#9aa0a6] transition-all cursor-pointer group"
+                  >
+                    <button onClick={() => openFolder(folder.path)} className="flex items-center gap-3 flex-1 min-w-0">
+                      <Folder className="w-5 h-5 text-[#1a73e8] flex-shrink-0" />
+                      <span className="text-sm font-medium truncate">{folder.name}</span>
+                    </button>
+                    <button
+                      onClick={() => handleDeleteFolder(folder.path)}
+                      disabled={folderActionLoading}
+                      className="p-1.5 text-[#9aa0a6] hover:text-[#d93025] hover:bg-[#fce8e8] rounded opacity-0 group-hover:opacity-100 transition-all"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </div>
-                </div>
-              )}
+                ))}
+              </div>
+            </div>
+          )}
 
-              {/* Assets */}
-              {filteredAssets.length > 0 && (
-                <div>
-                  <h3 className="text-xs font-medium text-[#9aa0a6] uppercase tracking-wider mb-3">Files</h3>
-                  
-                  {viewMode === 'grid' ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                      {filteredAssets.map(asset => (
-                        <Card key={asset.sha} hover className="group overflow-hidden">
-                          {/* Preview */}
-                          <div className="aspect-video bg-[#f8f9fa] dark:bg-[#171717] relative overflow-hidden flex items-center justify-center">
-                            {isImageAsset(asset.name) && getPreviewUrl(asset) ? (
-                              <img
-                                src={getPreviewUrl(asset)!}
-                                alt={asset.name}
-                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                                loading="lazy"
-                                onError={() => handlePreviewError(asset)}
-                              />
-                            ) : isVideoAsset(asset.name) ? (
-                              <Video className="w-10 h-10 text-[#9aa0a6]" />
-                            ) : (
-                              <FileText className="w-10 h-10 text-[#9aa0a6]" />
-                            )}
-                            
-                            {/* Overlay */}
-                            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                              <button
-                                onClick={() => window.open(asset.cdn_url, '_blank')}
-                                className="p-2 bg-white rounded-lg text-[#202124] hover:bg-[#f1f3f4] transition-colors"
-                                title="Open"
-                              >
-                                <ExternalLink className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => handleDelete(asset)}
-                                className="p-2 bg-white rounded-lg text-[#d93025] hover:bg-[#fce8e8] transition-colors"
-                                title="Delete"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
+          {/* Assets */}
+          {filteredAssets.length > 0 && (
+            <div>
+              <h3 className="text-xs font-medium text-[#9aa0a6] uppercase tracking-wider mb-3">Files</h3>
+              
+              {viewMode === 'grid' ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {filteredAssets.map(asset => {
+                    const isExpanded = expandedAssets[asset.sha];
+                    const isMoving = movingAssetPath === asset.path;
+                    return (
+                      <Card key={asset.sha} className="overflow-hidden">
+                        {/* Preview */}
+                        <div className="aspect-video bg-[#f8f9fa] dark:bg-[#171717] relative overflow-hidden flex items-center justify-center group">
+                          {isImageAsset(asset.name) && getPreviewUrl(asset) ? (
+                            <img
+                              src={getPreviewUrl(asset)!}
+                              alt={asset.name}
+                              className="w-full h-full object-cover"
+                              loading="lazy"
+                              onError={() => handlePreviewError(asset)}
+                            />
+                          ) : isVideoAsset(asset.name) ? (
+                            <Video className="w-10 h-10 text-[#9aa0a6]" />
+                          ) : (
+                            <FileText className="w-10 h-10 text-[#9aa0a6]" />
+                          )}
+                          
+                          {/* Quick Actions Overlay */}
+                          <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                            <button
+                              onClick={() => window.open(asset.cdn_url, '_blank')}
+                              className="p-2 bg-white rounded-lg text-[#202124] hover:bg-[#f1f3f4]"
+                              title="Open"
+                            >
+                              <ExternalLink className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleDelete(asset)}
+                              className="p-2 bg-white rounded-lg text-[#d93025] hover:bg-[#fce8e8]"
+                              title="Delete"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
                           </div>
+                        </div>
 
-                          {/* Info */}
-                          <div className="p-3 space-y-3">
-                            <div>
+                        {/* Info */}
+                        <div className="p-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
                               <p className="font-medium text-sm text-[#202124] dark:text-[#e8eaed] truncate" title={asset.name}>{asset.name}</p>
                               <p className="text-xs text-[#9aa0a6]">{formatSize(asset.size)}</p>
                             </div>
-
-                            {/* Move dropdown */}
-                            <div className="flex items-center gap-2">
-                              <select
-                                value={moveTargets[asset.path] ?? currentFolder}
-                                onChange={(e) => setMoveTargets(prev => ({ ...prev, [asset.path]: e.target.value }))}
-                                className="flex-1 text-xs bg-[#f8f9fa] dark:bg-[#3c4043] border border-[#dadce0] dark:border-[#5f6368] rounded px-2 py-1"
-                              >
-                                <option value="">Root</option>
-                                {allFolders.map(f => <option key={f} value={f}>{f}</option>)}
-                              </select>
-                              <button
-                                onClick={() => moveAssetToFolder(asset.path, asset.folder, moveTargets[asset.path] ?? currentFolder)}
-                                disabled={movingAssetPath === asset.path}
-                                className="p-1.5 bg-[#1a73e8] text-white rounded hover:bg-[#1557b0] disabled:opacity-50 transition-colors"
-                              >
-                                {movingAssetPath === asset.path ? <Loader2 className="w-3 h-3 spinner" /> : <ArrowRightLeft className="w-3 h-3" />}
-                              </button>
-                            </div>
-
-                            {/* URL */}
-                            <div className="flex items-center gap-2 p-2 bg-[#f8f9fa] dark:bg-[#171717] rounded-lg">
-                              <code className="text-xs font-mono truncate flex-1 text-[#5f6368]">{asset.cdn_url}</code>
-                              <button
-                                onClick={() => copyToClipboard(asset.cdn_url, asset.sha)}
-                                className="p-1 hover:bg-white dark:hover:bg-[#202124] rounded transition-colors"
-                              >
-                                {copying === asset.sha ? <Check className="w-3.5 h-3.5 text-[#188038]" /> : <Copy className="w-3.5 h-3.5" />}
-                              </button>
-                            </div>
+                            <button
+                              onClick={() => toggleAssetExpanded(asset.sha)}
+                              className={`p-1 text-[#9aa0a6] hover:text-[#1a73e8] hover:bg-[#e8f0fe] rounded transition-all ${isExpanded ? 'bg-[#e8f0fe] text-[#1a73e8]' : ''}`}
+                              title="Actions"
+                            >
+                              <ChevronRight className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                            </button>
                           </div>
-                        </Card>
-                      ))}
-                    </div>
-                  ) : (
-                    // List view
-                    <Card className="overflow-hidden">
-                      <table className="w-full text-sm">
-                        <thead className="bg-[#f8f9fa] dark:bg-[#3c4043]">
-                          <tr>
-                            <th className="text-left px-4 py-3 font-medium text-[#5f6368] dark:text-[#9aa0a6]">Name</th>
-                            <th className="text-left px-4 py-3 font-medium text-[#5f6368] dark:text-[#9aa0a6]">Size</th>
-                            <th className="text-left px-4 py-3 font-medium text-[#5f6368] dark:text-[#9aa0a6]">URL</th>
-                            <th className="text-right px-4 py-3 font-medium text-[#5f6368] dark:text-[#9aa0a6]">Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-[#e8eaed] dark:divide-[#3c4043]">
-                          {filteredAssets.map(asset => (
-                            <tr key={asset.sha} className="hover:bg-[#f8f9fa]/50 dark:hover:bg-[#3c4043]/50">
+
+                          {/* URL - Always visible */}
+                          <div className="flex items-center gap-2 mt-3 p-2 bg-[#f8f9fa] dark:bg-[#171717] rounded-lg">
+                            <code className="text-xs font-mono truncate flex-1 text-[#5f6368]">{asset.cdn_url}</code>
+                            <button
+                              onClick={() => copyToClipboard(asset.cdn_url, asset.sha)}
+                              className="p-1 hover:bg-white dark:hover:bg-[#202124] rounded"
+                            >
+                              {copying === asset.sha ? <Check className="w-3.5 h-3.5 text-[#188038]" /> : <Copy className="w-3.5 h-3.5" />}
+                            </button>
+                          </div>
+
+                          {/* Expandable Actions */}
+                          {isExpanded && (
+                            <div className="mt-3 pt-3 border-t border-[#dadce0] dark:border-[#5f6368] space-y-3 animate-fade-in">
+                              {/* Move to Folder */}
+                              <div>
+                                <label className="text-xs font-medium text-[#5f6368] dark:text-[#9aa0a6] mb-1.5 block">
+                                  {isMoving ? 'Moving...' : 'Move to Folder'}
+                                </label>
+                                <div className="flex items-center gap-2">
+                                  <select
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      if (val !== asset.folder && val !== '__placeholder') {
+                                        moveAssetToFolder(asset.path, val);
+                                        e.target.value = '__placeholder';
+                                      }
+                                    }}
+                                    disabled={isMoving}
+                                    className="flex-1 text-xs bg-white dark:bg-[#202124] border border-[#dadce0] dark:border-[#5f6368] rounded px-2 py-1.5 disabled:opacity-50"
+                                    defaultValue="__placeholder"
+                                  >
+                                    <option value="__placeholder" disabled>Select folder...</option>
+                                    <option value="">📁 Root</option>
+                                    {allFolders.map(f => (
+                                      <option key={f} value={f} disabled={f === asset.folder}>
+                                        {'  '.repeat(f.split('/').length)}📁 {f.split('/').pop()}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  {isMoving && <Loader2 className="w-4 h-4 text-[#1a73e8] spinner" />}
+                                </div>
+                              </div>
+
+                              {/* Path */}
+                              <div>
+                                <label className="text-xs font-medium text-[#5f6368] dark:text-[#9aa0a6] mb-1 block">Path</label>
+                                <code className="text-xs text-[#9aa0a6] block">{asset.path}</code>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </Card>
+                    );
+                  })}
+                </div>
+              ) : (
+                // List view
+                <Card className="overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-[#f8f9fa] dark:bg-[#3c4043]">
+                      <tr>
+                        <th className="text-left px-4 py-3 font-medium text-[#5f6368] dark:text-[#9aa0a6]">Name</th>
+                        <th className="text-left px-4 py-3 font-medium text-[#5f6368] dark:text-[#9aa0a6]">Size</th>
+                        <th className="text-left px-4 py-3 font-medium text-[#5f6368] dark:text-[#9aa0a6]">URL</th>
+                        <th className="text-right px-4 py-3 font-medium text-[#5f6368] dark:text-[#9aa0a6]">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#e8eaed] dark:divide-[#3c4043]">
+                      {filteredAssets.map(asset => {
+                        const isMoving = movingAssetPath === asset.path;
+                        return (
+                          <React.Fragment key={asset.sha}>
+                            <tr className="hover:bg-[#f8f9fa]/50 dark:hover:bg-[#3c4043]/50">
                               <td className="px-4 py-3">
                                 <div className="flex items-center gap-3">
                                   {isImageAsset(asset.name) ? <ImageIcon className="w-4 h-4 text-[#1a73e8]" /> : <File className="w-4 h-4 text-[#9aa0a6]" />}
@@ -1632,24 +1481,31 @@ const Dashboard = memo<{
                                 <code className="text-xs font-mono text-[#5f6368] truncate max-w-[300px] block">{asset.cdn_url}</code>
                               </td>
                               <td className="px-4 py-3">
-                                <div className="flex items-center justify-end gap-2">
+                                <div className="flex items-center justify-end gap-1">
                                   <button
                                     onClick={() => copyToClipboard(asset.cdn_url, asset.sha)}
-                                    className="p-1.5 hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] rounded transition-colors"
+                                    className="p-1.5 hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] rounded"
                                     title="Copy URL"
                                   >
                                     {copying === asset.sha ? <Check className="w-4 h-4 text-[#188038]" /> : <Copy className="w-4 h-4" />}
                                   </button>
                                   <button
                                     onClick={() => window.open(asset.cdn_url, '_blank')}
-                                    className="p-1.5 hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] rounded transition-colors"
+                                    className="p-1.5 hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] rounded"
                                     title="Open"
                                   >
                                     <ExternalLink className="w-4 h-4" />
                                   </button>
                                   <button
+                                    onClick={() => toggleAssetExpanded(asset.sha)}
+                                    className={`p-1.5 rounded ${expandedAssets[asset.sha] ? 'bg-[#e8f0fe] text-[#1a73e8]' : 'hover:bg-[#e8eaed] dark:hover:bg-[#3c4043]'}`}
+                                    title="More"
+                                  >
+                                    <ChevronRight className={`w-4 h-4 transition-transform ${expandedAssets[asset.sha] ? 'rotate-90' : ''}`} />
+                                  </button>
+                                  <button
                                     onClick={() => handleDelete(asset)}
-                                    className="p-1.5 hover:bg-[#fce8e8] text-[#d93025] rounded transition-colors"
+                                    className="p-1.5 hover:bg-[#fce8e8] text-[#d93025] rounded"
                                     title="Delete"
                                   >
                                     <Trash2 className="w-4 h-4" />
@@ -1657,17 +1513,59 @@ const Dashboard = memo<{
                                 </div>
                               </td>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </Card>
-                  )}
-                </div>
+                            {expandedAssets[asset.sha] && (
+                              <tr className="bg-[#f8f9fa] dark:bg-[#171717]">
+                                <td colSpan={4} className="px-4 py-3 animate-fade-in">
+                                  <div className="flex items-center gap-4">
+                                    <span className="text-xs text-[#5f6368]">Move to:</span>
+                                    <select
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        if (val !== asset.folder && val !== '__placeholder') {
+                                          moveAssetToFolder(asset.path, val);
+                                          e.target.value = '__placeholder';
+                                        }
+                                      }}
+                                      disabled={isMoving}
+                                      className="text-xs bg-white dark:bg-[#202124] border border-[#dadce0] dark:border-[#5f6368] rounded px-2 py-1 disabled:opacity-50"
+                                      defaultValue="__placeholder"
+                                    >
+                                      <option value="__placeholder" disabled>Select folder...</option>
+                                      <option value="">📁 Root</option>
+                                      {allFolders.map(f => (
+                                        <option key={f} value={f} disabled={f === asset.folder}>
+                                          {f}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    {isMoving && <Loader2 className="w-4 h-4 text-[#1a73e8] spinner" />}
+                                    <span className="text-xs text-[#9aa0a6]">Path: {asset.path}</span>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </Card>
               )}
             </div>
           )}
         </div>
-      </div>
+      )}
+
+      {/* Floating New Folder Button (when no folders exist) */}
+      {!showNewFolderInput && folders.length === 0 && (
+        <button
+          onClick={() => setShowNewFolderInput(true)}
+          className="fixed bottom-6 right-6 w-14 h-14 bg-[#1a73e8] text-white rounded-full shadow-lg hover:bg-[#1557b0] transition-all flex items-center justify-center z-30"
+          title="New Folder"
+        >
+          <FolderPlus className="w-6 h-6" />
+        </button>
+      )}
     </div>
   );
 });
