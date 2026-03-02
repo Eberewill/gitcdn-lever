@@ -15,7 +15,8 @@ import {
   FileText,
   Folder,
   FolderPlus,
-  ArrowRightLeft
+  ArrowRightLeft,
+  KeyRound
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -55,6 +56,21 @@ interface AssetsResponse {
   folders: FolderEntry[];
   files: Asset[];
   all_folders: string[];
+}
+
+interface ApiAppCredential {
+  app_id: string;
+  app_name: string;
+  token_type: 'Bearer';
+  app_secret: string;
+  ingest_url: string;
+  repo: string;
+  branch: string;
+  base_folder: string;
+  allowed_extensions: string[];
+  max_bytes: number;
+  issued_at: number;
+  expires_at: number;
 }
 
 interface FolderTreeNode {
@@ -329,6 +345,14 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
   const [dropFolderPath, setDropFolderPath] = useState<string | null>(null);
   const [imagePreviewAttempts, setImagePreviewAttempts] = useState<Record<string, number>>({});
   const [copying, setCopying] = useState<string | null>(null);
+  const [apiAppName, setApiAppName] = useState('');
+  const [apiAppFolder, setApiAppFolder] = useState('');
+  const [apiAppExtensions, setApiAppExtensions] = useState('');
+  const [apiAppMaxMb, setApiAppMaxMb] = useState('4');
+  const [apiAppTtlDays, setApiAppTtlDays] = useState('90');
+  const [apiAppLoading, setApiAppLoading] = useState(false);
+  const [apiAppError, setApiAppError] = useState<string | null>(null);
+  const [createdApiApp, setCreatedApiApp] = useState<ApiAppCredential | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchAssets = async (folderOverride?: string) => {
@@ -505,6 +529,77 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
       setFolderActionError('Failed to delete folder.');
     } finally {
       setFolderActionLoading(false);
+    }
+  };
+
+  const parseExtensionInput = (value: string): string[] | null => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return [];
+    }
+
+    const entries = trimmed
+      .split(',')
+      .map((entry) => entry.trim().replace(/^\./, '').toLowerCase())
+      .filter(Boolean);
+
+    if (entries.some((entry) => !/^[a-z0-9]{1,10}$/.test(entry))) {
+      return null;
+    }
+
+    return [...new Set(entries)];
+  };
+
+  const handleCreateApiApp = async () => {
+    const parsedExtensions = parseExtensionInput(apiAppExtensions);
+    if (!parsedExtensions) {
+      setApiAppError('Extensions must be comma-separated values like: png,jpg,pdf');
+      return;
+    }
+
+    const parsedMaxMb = Number.parseFloat(apiAppMaxMb);
+    if (!Number.isFinite(parsedMaxMb) || parsedMaxMb <= 0) {
+      setApiAppError('Max size (MB) must be a positive number.');
+      return;
+    }
+
+    const parsedTtlDays = Number.parseInt(apiAppTtlDays, 10);
+    if (!Number.isFinite(parsedTtlDays) || parsedTtlDays <= 0) {
+      setApiAppError('Token TTL must be a positive number of days.');
+      return;
+    }
+
+    setApiAppLoading(true);
+    setApiAppError(null);
+    try {
+      const targetFolder = apiAppFolder.trim() || currentFolder;
+      const payload = {
+        name: apiAppName.trim() || undefined,
+        folder: targetFolder,
+        allowed_extensions: parsedExtensions,
+        max_bytes: Math.round(parsedMaxMb * 1024 * 1024),
+        expires_in_days: parsedTtlDays,
+      };
+
+      const res = await fetch('/api/apps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => null);
+        setApiAppError(errorData?.error || 'Failed to create API app credential.');
+        return;
+      }
+
+      const data = (await res.json()) as ApiAppCredential;
+      setCreatedApiApp(data);
+    } catch (err) {
+      console.error(err);
+      setApiAppError('Failed to create API app credential.');
+    } finally {
+      setApiAppLoading(false);
     }
   };
 
@@ -729,6 +824,104 @@ const Dashboard = ({ user, onChangeRepo }: { user: User, onChangeRepo: () => voi
           {folderActionError}
         </div>
       ) : null}
+
+      <section className="mb-8 rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 overflow-hidden">
+        <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950/40">
+          <div className="flex items-center gap-2">
+            <KeyRound className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+            <p className="text-sm font-bold text-zinc-900 dark:text-zinc-100">Programmatic Upload App</p>
+          </div>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+            Generate an app URI and bearer secret for server-to-server uploads.
+          </p>
+        </div>
+        <div className="p-4 space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            <input
+              value={apiAppName}
+              onChange={(event) => setApiAppName(event.target.value)}
+              placeholder="App name (optional)"
+              className="px-3 py-2 text-sm rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+            />
+            <input
+              value={apiAppFolder}
+              onChange={(event) => setApiAppFolder(event.target.value)}
+              placeholder={`Base folder (default: ${currentFolderLabel})`}
+              className="px-3 py-2 text-sm rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+            />
+            <input
+              value={apiAppExtensions}
+              onChange={(event) => setApiAppExtensions(event.target.value)}
+              placeholder="Allowed extensions (png,jpg,pdf)"
+              className="px-3 py-2 text-sm rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                value={apiAppMaxMb}
+                onChange={(event) => setApiAppMaxMb(event.target.value)}
+                placeholder="Max MB"
+                className="px-3 py-2 text-sm rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+              />
+              <input
+                value={apiAppTtlDays}
+                onChange={(event) => setApiAppTtlDays(event.target.value)}
+                placeholder="TTL days"
+                className="px-3 py-2 text-sm rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+              />
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Max per app: 15 MB. Folder scope limits where uploads can be written.
+            </p>
+            <button
+              onClick={() => void handleCreateApiApp()}
+              disabled={apiAppLoading}
+              className="px-4 py-2 text-sm rounded-xl bg-zinc-900 text-white font-semibold hover:bg-zinc-800 transition-colors disabled:opacity-50"
+            >
+              {apiAppLoading ? 'Creating...' : 'Create App URI'}
+            </button>
+          </div>
+          {apiAppError ? (
+            <div className="rounded-xl border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/20 px-3 py-2 text-xs font-medium text-red-700 dark:text-red-300">
+              {apiAppError}
+            </div>
+          ) : null}
+          {createdApiApp ? (
+            <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/20 p-3 space-y-2">
+              <p className="text-xs font-semibold text-emerald-800 dark:text-emerald-300">
+                App created: {createdApiApp.app_name} ({createdApiApp.app_id})
+              </p>
+              <p className="text-xs text-emerald-700/90 dark:text-emerald-300/90">
+                Token expires: {new Date(createdApiApp.expires_at).toLocaleString()} • Max size: {formatSize(createdApiApp.max_bytes)}
+              </p>
+              <div className="flex items-center gap-2 p-2 bg-white/70 dark:bg-zinc-900/70 rounded-lg border border-emerald-200/70 dark:border-emerald-900/60">
+                <code className="text-[11px] text-zinc-700 dark:text-zinc-200 truncate flex-1 font-mono">{createdApiApp.ingest_url}</code>
+                <button
+                  onClick={() => copyToClipboard(createdApiApp.ingest_url, 'api-app-ingest-url')}
+                  className="p-1 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+                  title="Copy ingest URL"
+                >
+                  {copying === 'api-app-ingest-url' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+              <div className="flex items-center gap-2 p-2 bg-white/70 dark:bg-zinc-900/70 rounded-lg border border-emerald-200/70 dark:border-emerald-900/60">
+                <code className="text-[11px] text-zinc-700 dark:text-zinc-200 truncate flex-1 font-mono">{createdApiApp.app_secret}</code>
+                <button
+                  onClick={() => copyToClipboard(createdApiApp.app_secret, 'api-app-secret')}
+                  className="p-1 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+                  title="Copy app secret"
+                >
+                  {copying === 'api-app-secret' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+              <p className="text-[11px] text-emerald-700/80 dark:text-emerald-300/80">
+                Save this secret now. It grants upload access to the selected repo/branch.
+              </p>
+            </div>
+          ) : null}
+        </div>
+      </section>
 
       <div className="grid grid-cols-1 lg:grid-cols-[280px,1fr] gap-6">
         <aside className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-2xl overflow-hidden h-fit">
