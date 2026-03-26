@@ -785,52 +785,77 @@ const Dashboard = memo<{
   }, [fetchAssets]);
 
   const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const selectedFiles: File[] = Array.from(e.target.files ?? []);
     const fileInput = e.target;
-    if (!file) return;
+    if (selectedFiles.length === 0) return;
+
+    const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const content = typeof reader.result === 'string' ? reader.result : null;
+        if (!content) {
+          reject(new Error(`Failed to read "${file.name}" before upload.`));
+          return;
+        }
+        resolve(content);
+      };
+      reader.onerror = () => reject(new Error(`Failed to read "${file.name}" before upload.`));
+      reader.readAsDataURL(file);
+    });
 
     setUploadError(null);
     setUploading(true);
-    setUploadingFileName(file.name);
-    
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      const content = typeof reader.result === 'string' ? reader.result : null;
-      if (!content) {
-        setUploadError('Failed to read file before upload.');
-        setUploading(false);
-        setUploadingFileName(null);
-        fileInput.value = '';
+    setUploadingFileName(selectedFiles.length === 1 ? selectedFiles[0].name : `${selectedFiles.length} files`);
+
+    const failedUploads: string[] = [];
+    let uploadedCount = 0;
+
+    try {
+      for (let index = 0; index < selectedFiles.length; index += 1) {
+        const file = selectedFiles[index];
+        setUploadingFileName(selectedFiles.length === 1 ? file.name : `${index + 1} of ${selectedFiles.length}: ${file.name}`);
+
+        try {
+          const content = await readFileAsDataUrl(file);
+          const res = await fetch('/api/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: file.name, folder: currentFolder, content })
+          });
+
+          if (!res.ok) {
+            const errorData = await res.json().catch(() => null);
+            failedUploads.push(`${file.name}: ${errorData?.error || 'Upload failed.'}`);
+            continue;
+          }
+
+          uploadedCount += 1;
+        } catch (err) {
+          console.error(err);
+          failedUploads.push(err instanceof Error ? err.message : `${file.name}: Upload failed.`);
+        }
+      }
+
+      if (uploadedCount > 0) {
+        await fetchAssets(currentFolder);
+      }
+
+      if (failedUploads.length === 0) {
+        onToast(uploadedCount === 1 ? 'File uploaded successfully' : `${uploadedCount} files uploaded successfully`);
         return;
       }
 
-      try {
-        const res = await fetch('/api/upload', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: file.name, folder: currentFolder, content })
-        });
+      const errorMessage = failedUploads.length === selectedFiles.length
+        ? failedUploads.join(' ')
+        : `${uploadedCount} uploaded, ${failedUploads.length} failed. ${failedUploads.join(' ')}`;
 
-        if (!res.ok) {
-          const errorData = await res.json().catch(() => null);
-          setUploadError(errorData?.error || 'Upload failed. Please try again.');
-          onToast(errorData?.error || 'Upload failed', 'error');
-          return;
-        }
-
-        onToast('File uploaded successfully');
-        await fetchAssets(currentFolder);
-      } catch (err) {
-        console.error(err);
-        setUploadError('Upload failed. Please try again.');
-        onToast('Upload failed', 'error');
-      } finally {
-        setUploading(false);
-        setUploadingFileName(null);
-        fileInput.value = '';
-      }
-    };
-    reader.readAsDataURL(file);
+      setUploadError(errorMessage);
+      onToast(uploadedCount > 0 ? 'Some uploads failed' : 'Upload failed', 'error');
+    } finally {
+      setUploading(false);
+      setUploadingFileName(null);
+      fileInput.value = '';
+    }
   }, [currentFolder, fetchAssets, onToast]);
 
   const handleDelete = useCallback(async (asset: Asset) => {
@@ -1207,7 +1232,7 @@ const Dashboard = memo<{
               <List className="w-4 h-4" />
             </button>
           </div>
-          <input type="file" className="hidden" ref={fileInputRef} onChange={handleUpload} accept="image/*,video/*,audio/*,application/pdf" />
+          <input type="file" className="hidden" ref={fileInputRef} onChange={handleUpload} accept="image/*,video/*,audio/*,application/pdf" multiple />
           <Button onClick={() => fileInputRef.current?.click()} loading={uploading} icon={<Plus className="w-4 h-4" />}>
             Upload
           </Button>
